@@ -1,0 +1,5 @@
+httpx
+openai
+supabase
+certifi
+python-dotenv

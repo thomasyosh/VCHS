@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tree Cases Chatbot</title>
+  <style>
+    :root {
+      --bg: #f5f5f7;
+      --panel: #ffffff;
+      --border: #d9e1ea;
+      --text: #111827;
+      --muted: #6b7280;
+      --thinking-bg: #f3f6fb;
+      --thinking-border: #7c96b8;
+      --thinking-text: #4e647f;
+      --answer-bg: #ffffff;
+      --answer-border: #16a34a;
+      --answer-text: #111827;
+      --debug-bg: #fff8e6;
+      --debug-border: #d4a72c;
+      --debug-text: #735c0f;
+      --prompt-bg: #fef3f2;
+      --prompt-border: #f97316;
+      --prompt-text: #7c2d12;
+      --button: #2563eb;
+      --button-hover: #1d4ed8;
+      --danger: #dc2626;
+      --tag-bg: #e5f0ff;
+      --tag-text: #1d4ed8;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Microsoft JhengHei",
+                   "PingFang TC", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #e5edff 0, #f5f5f7 45%, #f5f5f7 100%);
+      color: var(--text);
+    }
+
+    .container {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 24px 16px 48px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+
+    .sub {
+      color: var(--muted);
+      margin-bottom: 4px;
+      max-width: 680px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #ecfdf5;
+      color: #15803d;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .badge span.dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #22c55e;
+      box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.25);
+    }
+
+    .toolbar, .input-panel, .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-end;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 180px;
+      flex: 1;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+    }
+
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: #60a5fa;
+      box-shadow: 0 0 0 1px #60a5fa33;
+    }
+
+    textarea {
+      min-height: 110px;
+      resize: vertical;
+    }
+
+    button {
+      border: none;
+      border-radius: 999px;
+      background: var(--button);
+      color: #fff;
+      padding: 10px 16px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+    }
+
+    button:hover { background: var(--button-hover); }
+    button.secondary { background: #4b5563; }
+    button.secondary:hover { background: #374151; }
+    button.danger { background: var(--danger); }
+    button.danger:hover { background: #b91c1c; }
+    button:disabled { opacity: 0.6; cursor: default; }
+
+    .input-panel {
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .actions {
+      margin-top: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .panel {
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 8px;
+    }
+
+    .status {
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 21px;
+    }
+
+    .status-tag {
+      font-size: 11px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: var(--tag-bg);
+      color: var(--tag-text);
+      font-weight: 600;
+    }
+
+    .block {
+      margin-top: 12px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.7;
+    }
+
+    .thinking-block {
+      background: var(--thinking-bg);
+      border-left: 4px solid var(--thinking-border);
+      color: var(--thinking-text);
+      font-family: Menlo, Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+
+    .answer-block {
+      background: var(--answer-bg);
+      border-left: 4px solid var(--answer-border);
+      color: var(--answer-text);
+      font-size: 15px;
+    }
+
+    .debug-block {
+      background: var(--debug-bg);
+      border-left: 4px solid var(--debug-border);
+      color: var(--debug-text);
+      font-family: Menlo, Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
+    .prompt-block {
+      background: var(--prompt-bg);
+      border-left: 4px solid var(--prompt-border);
+      color: var(--prompt-text);
+      font-family: Menlo, Consolas, "Courier New", monospace;
+      font-size: 12px;
+    }
+
+    .label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .thinking-label { color: var(--thinking-border); }
+    .answer-label { color: var(--answer-border); }
+    .debug-label { color: var(--debug-border); }
+    .prompt-label { color: var(--prompt-border); }
+
+    details summary {
+      cursor: pointer;
+      user-select: none;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    details summary::marker {
+      color: var(--muted);
+    }
+
+    .footer-note {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 640px) {
+      header { flex-direction: column; align-items: flex-start; }
+      h1 { font-size: 22px; }
+      .container { padding: 16px 12px 32px; }
+      .toolbar { padding: 12px; }
+      .input-panel { padding: 12px; }
+      .panel { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Tree Cases Chatbot</h1>
+        <div class="sub">
+          分開顯示「送往 AI 的 Prompt」、「思考過程」和「正式回覆」，
+          方便你 debug 本地 Ollama + FastAPI + Supabase，以及報告生成流程。
+        </div>
+      </div>
+      <div class="badge">
+        <span class="dot"></span>
+        本地 PoC 節點
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="field">
+        <label for="apiUrl">API URL</label>
+        <input id="apiUrl" value="http://127.0.0.1:8020/api/chat" />
+      </div>
+      <div class="field">
+        <label for="sessionId">Session ID</label>
+        <input id="sessionId" value="default" />
+      </div>
+      <div class="field" style="max-width:200px;">
+        <label>報告模式說明</label>
+        <div class="hint">
+          當問題包含「報告 / report」且屬詳細個案查詢時，系統會生成 HTML 報告並自動下載。
+        </div>
+      </div>
+      <div>
+        <button id="resetBtn" type="button" class="secondary">重置 Session</button>
+      </div>
+    </div>
+
+    <div class="input-panel">
+      <label for="prompt">問題</label>
+      <textarea id="prompt"
+        placeholder="例如：我要大埔和中西區嚴重個案既詳細記錄, 將佢製作成報告比我"></textarea>
+      <div class="actions">
+        <div class="hint">
+          提示：Ctrl / ⌘ + Enter 快速發送。<br />
+          報告示例問題：<br />
+          「我要大埔和中西區嚴重個案既詳細記錄, 將佢製作成報告比我」
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button id="sendBtn" type="button">
+            <span>發送</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="status-row">
+        <div id="status" class="status">未開始</div>
+        <div id="statusTag" class="status-tag" style="display:none;"></div>
+      </div>
+
+      <!-- 1. 思考過程 -->
+      <details id="thinkingDetails" open>
+        <summary>思考過程（Thinking / Reasoning）</summary>
+        <div class="block thinking-block">
+          <span class="label thinking-label">THINKING</span>
+          <div id="thinking"></div>
+        </div>
+      </details>
+
+      <!-- 2. 正式回覆 -->
+      <div class="block answer-block">
+        <span class="label answer-label">正式回覆</span>
+        <div id="answer"></div>
+        <div id="answerFooter" class="footer-note"></div>
+      </div>
+
+      <!-- 3. PROMPT TO LLM -->
+      <details id="promptDetails" open>
+        <summary>送往 AI 的 Prompt（包括 system / 歷史 / DB context）</summary>
+        <div class="block prompt-block">
+          <span class="label prompt-label">PROMPT TO LLM</span>
+          <div id="promptView"></div>
+        </div>
+      </details>
+
+      <!-- 4. DEBUG -->
+      <div id="debugWrap" class="block debug-block" style="display:none;">
+        <span class="label debug-label">DEBUG EVENT</span>
+        <div id="debug"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const apiUrlEl = document.getElementById("apiUrl");
+    const sessionIdEl = document.getElementById("sessionId");
+    const promptEl = document.getElementById("prompt");
+    const sendBtn = document.getElementById("sendBtn");
+    const resetBtn = document.getElementById("resetBtn");
+    const statusEl = document.getElementById("status");
+    const statusTagEl = document.getElementById("statusTag");
+    const thinkingEl = document.getElementById("thinking");
+    const answerEl = document.getElementById("answer");
+    const answerFooterEl = document.getElementById("answerFooter");
+    const debugEl = document.getElementById("debug");
+    const debugWrap = document.getElementById("debugWrap");
+    const promptViewEl = document.getElementById("promptView");
+
+    let isStreaming = false;
+
+    // 報告相關 state（每輪請求會 reset）
+    let currentIsReport = false;
+    let currentReportHtml = "";
+    let reportFilename = "report.html";
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function setStatusTag(text, visible) {
+      if (!visible) {
+        statusTagEl.style.display = "none";
+        statusTagEl.textContent = "";
+        return;
+      }
+      statusTagEl.style.display = "inline-flex";
+      statusTagEl.textContent = text;
+    }
+
+    function clearOutput() {
+      thinkingEl.textContent = "";
+      answerEl.textContent = "";
+      answerFooterEl.textContent = "";
+      debugEl.textContent = "";
+      debugWrap.style.display = "none";
+      promptViewEl.textContent = "";
+      setStatusTag("", false);
+
+      currentIsReport = false;
+      currentReportHtml = "";
+      reportFilename = "report.html";
+    }
+
+    function appendText(el, text) {
+      el.textContent += text;
+    }
+
+    // 只抽取 <html>...</html> 之間的內容，避免雜文進入報告檔
+    function extractHtmlFromText(text) {
+      if (!text) return "";
+      const doctypeIndex = text.indexOf("<!DOCTYPE html");
+      const htmlIndex = text.indexOf("<html");
+      const start = doctypeIndex !== -1 ? doctypeIndex : htmlIndex;
+      const end = text.lastIndexOf("</html>");
+      if (start === -1 || end === -1) {
+        return text.trim();
+      }
+      return text.slice(start, end + "</html>".length).trim();
+    }
+
+    async function sendMessage() {
+      if (isStreaming) return;
+
+      const apiUrl = apiUrlEl.value.trim();
+      const sessionId = sessionIdEl.value.trim() || "default";
+      const prompt = promptEl.value.trim();
+
+      if (!apiUrl || !prompt) {
+        setStatus("請輸入 API URL 同問題");
+        return;
+      }
+
+      clearOutput();
+      isStreaming = true;
+      sendBtn.disabled = true;
+      setStatus("串流中...");
+      setStatusTag("等待回應", true);
+
+      try {
+        const response = await fetch(apiUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, session_id: sessionId })
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+
+        if (!response.body) {
+          throw new Error("response.body is empty");
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split("\n\n");
+          buffer = events.pop() || "";
+
+          for (const evt of events) {
+            if (!evt.startsWith("data: ")) continue;
+            const jsonStr = evt.slice(6).trim();
+            if (!jsonStr) continue;
+
+            let data;
+            try {
+              data = JSON.parse(jsonStr);
+            } catch (e) {
+              console.error("Invalid JSON event:", jsonStr);
+              continue;
+            }
+
+            const type = data.type;
+
+            if (type === "prompt") {
+              promptViewEl.textContent = data.text || "";
+              setStatus("已收到 prompt，等待模型回應...");
+            } else if (type === "debug") {
+              debugWrap.style.display = "block";
+              debugEl.textContent = JSON.stringify(data, null, 2);
+
+              if (data.report_mode) {
+                currentIsReport = true;
+                setStatusTag("報告模式", true);
+                answerFooterEl.textContent =
+                  "提示：系統正以報告模式產生 HTML，完成後會自動下載報告檔案。";
+              }
+            } else if (type === "thinking") {
+              appendText(thinkingEl, data.text || "");
+              setStatus("模型思考中...");
+            } else if (type === "answer") {
+              appendText(answerEl, data.text || "");
+              setStatus("模型回覆中...");
+
+              if (currentIsReport) {
+                currentReportHtml += data.text || "";
+              }
+            } else if (type === "error") {
+              appendText(answerEl, "\n[ERROR] " + (data.error || "unknown error"));
+              setStatus("發生錯誤");
+              setStatusTag("錯誤", true);
+            } else if (type === "done") {
+              const thinkingChars = data.thinking_chars ?? 0;
+              const answerChars = data.answer_chars ?? 0;
+              const answeredBy = data.answered_by || "llm";
+
+              setStatus(
+                `完成：thinking ${thinkingChars} chars, answer ${answerChars} chars（${answeredBy}）`
+              );
+
+              if (data.report_mode && currentReportHtml) {
+                if (data.filename) {
+                  reportFilename = data.filename;
+                }
+
+                const cleanedHtml = extractHtmlFromText(currentReportHtml);
+
+                try {
+                  const blob = new Blob(
+                    [cleanedHtml],
+                    { type: "text/html;charset=utf-8" }
+                  );
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = reportFilename;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+
+                  setStatusTag("已下載報告", true);
+                  answerFooterEl.textContent =
+                    `已自動下載報告檔案：「${reportFilename}」，如未自動下載可向 IT 同事查詢瀏覽器設定。`;
+                } catch (e) {
+                  console.error("download report failed", e);
+                  answerFooterEl.textContent =
+                    "報告已生成，但瀏覽器未能自動下載，請聯絡 IT 同事協助。";
+                  setStatusTag("報告生成（下載失敗）", true);
+                }
+              } else {
+                if (!currentIsReport) {
+                  setStatusTag("一般對話", true);
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        appendText(answerEl, "[ERROR] " + err.message);
+        setStatus("請求失敗");
+        setStatusTag("錯誤", true);
+      } finally {
+        isStreaming = false;
+        sendBtn.disabled = false;
+      }
+    }
+
+    async function resetSession() {
+      const sessionId = sessionIdEl.value.trim() || "default";
+      const apiUrl = apiUrlEl.value.trim() || "";
+      if (!apiUrl) {
+        setStatus("請先輸入 API URL");
+        return;
+      }
+      const resetUrl = apiUrl.replace(/\/api\/chat\/?$/, "/api/reset");
+
+      try {
+        const response = await fetch(resetUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId })
+        });
+        const data = await response.json();
+        clearOutput();
+        setStatus(data.message || "Session cleared");
+        setStatusTag("Session 已重置", true);
+      } catch (err) {
+        console.error(err);
+        setStatus("reset 失敗: " + err.message);
+        setStatusTag("錯誤", true);
+      }
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    resetBtn.addEventListener("click", resetSession);
+
+    promptEl.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>

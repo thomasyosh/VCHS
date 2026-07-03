@@ -1,0 +1,28 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        // {
+        //     "name": "Run Pipeline (fetch + analyze)",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "module": "main",
+        //     "cwd": "${workspaceFolder}",
+        //     "console": "integratedTerminal",
+        //     "env": {
+        //         "PYTHONPATH": "${workspaceFolder}/src"
+        //     }
+        // },
+        {
+            "name": "Run Web Server",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "main",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        }
+    ]
+}
