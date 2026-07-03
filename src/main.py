@@ -11,24 +11,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from openai import OpenAI
 from supabase import create_client, Client
+from dotenv import load_dotenv
 
 # =========================================================
 # 環境設定
 # =========================================================
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-qwen3-8b-limited")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-r1:14b")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "ds-14b-q4:latest")
-#OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "GLM-4.7-Flash-Q4_K_M")
+load_dotenv()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
+COMPANY_PROXY = os.getenv("COMPANY_PROXY")
+NO_PROXY = os.getenv("NO_PROXY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-SUPABASE_URL = "https://sinztwikkrlzuhhdfavs.supabase.co"
-SUPABASE_KEY = "sb_publishable_OmOIotUShYgGusAaju0DHA_ysYwIqE4"
-
-COMPANY_PROXY = "http://smoproxy:8080"
 os.environ["HTTP_PROXY"] = COMPANY_PROXY
 os.environ["HTTPS_PROXY"] = COMPANY_PROXY
-os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-os.environ["PYTHONHTTPSVERIFY"] = "0"
+os.environ["NO_PROXY"] =  NO_PROXY
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variable.")
