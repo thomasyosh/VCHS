@@ -519,10 +519,13 @@ def sse_event(payload: Dict[str, Any]) -> str:
 
 # =========================================================
 # Chat interaction CSV log (server-side only)
+# Default path is OUTSIDE the project folder so Live Server
+# (port 5501) does not auto-reload the browser when a row is appended.
 # =========================================================
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR") or str(_PROJECT_ROOT / "logs"))
+_DEFAULT_LOG_DIR = Path.home() / "VCHS" / "logs"
+CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR") or str(_DEFAULT_LOG_DIR))
 CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
+print(f"[chat log] CSV path: {CHAT_LOG_CSV}")
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
     "User input",
@@ -534,15 +537,6 @@ CHAT_LOG_COLUMNS = [
 ]
 
 
-def _ensure_chat_log_header() -> None:
-    CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    if not CHAT_LOG_CSV.exists():
-        with _chat_log_lock:
-            if not CHAT_LOG_CSV.exists():
-                with CHAT_LOG_CSV.open("w", newline="", encoding="utf-8-sig") as f:
-                    csv.writer(f).writerow(CHAT_LOG_COLUMNS)
-
-
 def log_chat_turn(
     user_input: str,
     thinking: str,
@@ -551,11 +545,17 @@ def log_chat_turn(
     handling_time_ms: int,
     model_used: str,
 ) -> None:
-    _ensure_chat_log_header()
     row = [user_input, thinking, answer, prompt_to_llm, handling_time_ms, model_used]
     with _chat_log_lock:
+        CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        write_header = not CHAT_LOG_CSV.exists() or CHAT_LOG_CSV.stat().st_size == 0
         with CHAT_LOG_CSV.open("a", newline="", encoding="utf-8-sig") as f:
-            csv.writer(f).writerow(row)
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(CHAT_LOG_COLUMNS)
+            writer.writerow(row)
+            f.flush()
+            os.fsync(f.fileno())
 
 
 # =========================================================
@@ -576,22 +576,17 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         prompt_to_llm: Optional[str] = None,
         model_used: Optional[str] = None,
     ) -> None:
-        log_payload = {
-            "user_input": user_prompt,
-            "thinking": assistant_thinking if thinking is None else thinking,
-            "answer": answer,
-            "prompt_to_llm": prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
-            "handling_time_ms": elapsed_ms(),
-            "model_used": model_used or OLLAMA_MODEL or "unknown",
-        }
-
-        def _write() -> None:
-            try:
-                log_chat_turn(**log_payload)
-            except Exception as log_err:
-                print(f"chat log write failed: {log_err}")
-
-        threading.Thread(target=_write, daemon=True).start()
+        try:
+            log_chat_turn(
+                user_input=user_prompt,
+                thinking=assistant_thinking if thinking is None else thinking,
+                answer=answer,
+                prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
+                handling_time_ms=elapsed_ms(),
+                model_used=model_used or OLLAMA_MODEL or "unknown",
+            )
+        except Exception as log_err:
+            print(f"chat log write failed: {log_err}")
 
     try:
         history = trim_history(sessions.get(session_id, []))
