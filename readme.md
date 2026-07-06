@@ -1,3 +1,9 @@
+### create virtual environment
+
+```Shell
+python -m venv .ven
+```
+
 ### activate venv
 
 ```Shell

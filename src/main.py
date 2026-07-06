@@ -3,12 +3,13 @@ import json
 import re
 from collections import Counter
 from datetime import datetime, date
-from typing import Dict, List, Any, Tuple
+from pathlib import Path
+from typing import Dict, List, Any, Tuple, Optional
 
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from openai import OpenAI
 from supabase import create_client, Client
 from dotenv import load_dotenv
@@ -30,6 +31,11 @@ os.environ["NO_PROXY"] =  NO_PROXY
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variable.")
+
+# Local JSON cache for tree_cases (written before any query uses the data)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CASES_DATA_DIR = PROJECT_ROOT / "data"
+CASES_JSON_PATH = CASES_DATA_DIR / "tree_cases.json"
 
 # =========================================================
 # FastAPI
@@ -315,6 +321,46 @@ def fetch_all_cases(limit: int = 300) -> List[Dict[str, Any]]:
     return response.data or []
 
 
+def save_cases_to_file(rows: List[Dict[str, Any]], path: Optional[Path] = None) -> Path:
+    """Persist case rows as JSON before downstream queries use them."""
+    target = path or CASES_JSON_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+        "count": len(rows),
+        "cases": rows,
+    }
+    with target.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return target
+
+
+def load_cases_from_file(path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load case rows from the local JSON cache file."""
+    target = path or CASES_JSON_PATH
+    if not target.is_file():
+        return []
+    with target.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        cases = payload.get("cases")
+        if isinstance(cases, list):
+            return cases
+    return []
+
+
+def fetch_and_cache_cases(limit: int = 300) -> Tuple[List[Dict[str, Any]], Path]:
+    """
+    Fetch cases from Supabase, save JSON to disk, then return rows for querying.
+    All DB / LLM queries should use this instead of fetch_all_cases directly.
+    """
+    rows = fetch_all_cases(limit=limit)
+    saved_path = save_cases_to_file(rows)
+    return rows, saved_path
+
+
 def trim_history(history: List[Dict[str, str]], max_turns: int = 4) -> List[Dict[str, str]]:
     if len(history) <= max_turns * 2:
         return history
@@ -529,9 +575,8 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
         # ========== DB 問題 ==========
         if is_db_query:
-            rows = fetch_all_cases(limit=300)
+            rows, cases_file = fetch_and_cache_cases(limit=300)
             rows_loaded = len(rows)
-            print(rows)
             query_type = classify_query_type(user_prompt)
 
             if query_type == "detail":
@@ -603,6 +648,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "is_db_query": True,
                     "query_type": query_type,
                     "rows_loaded": rows_loaded,
+                    "cases_file": str(cases_file),
                     "filters": filters_debug,
                     "answered_by": "backend",
                     "report_mode": False,
@@ -709,6 +755,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "is_db_query": True,
                     "query_type": query_type,
                     "rows_loaded": rows_loaded,
+                    "cases_file": str(cases_file),
                     "filters": filters_debug,
                     "report_template": template_id,
                     "answered_by": "llm-html-report",
@@ -778,6 +825,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 "is_db_query": True,
                 "query_type": query_type,
                 "rows_loaded": rows_loaded,
+                "cases_file": str(cases_file),
                 "filters": filters_debug,
                 "answered_by": "llm",
                 "report_mode": False,
@@ -876,6 +924,33 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 @app.get("/health")
 def health():
     return {"ok": True, "service": "tree-cases-chatbot-multi-filter-report"}
+
+
+@app.get("/api/cases/download")
+def download_cases(limit: int = 300):
+    """
+    Fetch cases from Supabase, save JSON locally, and return the file for download.
+    Use this to refresh data before querying without sending a chat message.
+    """
+    rows, saved_path = fetch_and_cache_cases(limit=limit)
+    return FileResponse(
+        path=saved_path,
+        media_type="application/json",
+        filename="tree_cases.json",
+        headers={"X-Cases-Count": str(len(rows))},
+    )
+
+
+@app.get("/api/cases")
+def get_cases_metadata(limit: int = 300):
+    """Fetch, persist, and return case metadata plus the saved file path."""
+    rows, saved_path = fetch_and_cache_cases(limit=limit)
+    return {
+        "ok": True,
+        "count": len(rows),
+        "saved_to": str(saved_path),
+        "fetched_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 @app.post("/api/chat")
