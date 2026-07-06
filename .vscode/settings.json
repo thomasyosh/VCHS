@@ -4,6 +4,8 @@
         ".vscode/**",
         "**/logs/**",
         "**/.git/**",
-        "**/.venv/**"
+        "**/.venv/**",
+        "**/chat_log_path.txt",
+        "**/*.csv"
     ]
 }

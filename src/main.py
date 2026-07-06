@@ -519,13 +519,30 @@ def sse_event(payload: Dict[str, Any]) -> str:
 
 # =========================================================
 # Chat interaction CSV log (server-side only)
-# Default: <project>/logs/chat_log.csv
-# Live Server ignore for logs/ is set in .vscode/settings.json
+# Stored OUTSIDE the project folder so Live Server (port 5501)
+# does not reload the browser when a row is appended.
+# See chat_log_path.txt in the project root for the exact path.
 # =========================================================
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_LOG_DIR = _PROJECT_ROOT / "logs"
+_DEFAULT_LOG_DIR = Path.home() / "VCHS" / "logs"
 CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR") or str(_DEFAULT_LOG_DIR))
 CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
+
+
+def _write_log_pointer_file() -> None:
+    pointer = _PROJECT_ROOT / "chat_log_path.txt"
+    text = (
+        "Chat log CSV (updated after each completed chat):\n"
+        f"{CHAT_LOG_CSV.resolve()}\n"
+    )
+    try:
+        if not pointer.exists() or pointer.read_text(encoding="utf-8") != text:
+            pointer.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+_write_log_pointer_file()
 print(f"[chat log] CSV path: {CHAT_LOG_CSV.resolve()}", flush=True)
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
