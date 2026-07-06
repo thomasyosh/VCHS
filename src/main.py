@@ -1,9 +1,13 @@
+import csv
 import os
 import json
 import re
+import threading
+import time
 from collections import Counter
 from datetime import datetime, date
-from typing import Dict, List, Any, Tuple
+from pathlib import Path
+from typing import Dict, List, Any, Tuple, Optional
 
 import httpx
 from fastapi import FastAPI, Request
@@ -514,11 +518,71 @@ def sse_event(payload: Dict[str, Any]) -> str:
 
 
 # =========================================================
+# Chat interaction CSV log
+# =========================================================
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR", _PROJECT_ROOT / "logs"))
+CHAT_LOG_CSV = CHAT_LOG_DIR / os.getenv("CHAT_LOG_FILE", "chat_log.csv")
+_chat_log_lock = threading.Lock()
+CHAT_LOG_COLUMNS = [
+    "User input",
+    "Thinking",
+    "Answer",
+    "Prompt to LLM",
+    "Handling time",
+]
+
+
+def _ensure_chat_log_header() -> None:
+    CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if not CHAT_LOG_CSV.exists():
+        with _chat_log_lock:
+            if not CHAT_LOG_CSV.exists():
+                with CHAT_LOG_CSV.open("w", newline="", encoding="utf-8-sig") as f:
+                    csv.writer(f).writerow(CHAT_LOG_COLUMNS)
+
+
+def log_chat_turn(
+    user_input: str,
+    thinking: str,
+    answer: str,
+    prompt_to_llm: str,
+    handling_time_ms: int,
+) -> None:
+    _ensure_chat_log_header()
+    row = [user_input, thinking, answer, prompt_to_llm, handling_time_ms]
+    with _chat_log_lock:
+        with CHAT_LOG_CSV.open("a", newline="", encoding="utf-8-sig") as f:
+            csv.writer(f).writerow(row)
+
+
+# =========================================================
 # 主 streaming generator
 # =========================================================
 def openai_stream_generator(user_prompt: str, session_id: str):
+    start_time = time.perf_counter()
     assistant_answer = ""
     assistant_thinking = ""
+    prompt_text_logged = ""
+
+    def elapsed_ms() -> int:
+        return round((time.perf_counter() - start_time) * 1000)
+
+    def write_chat_log(
+        answer: str,
+        thinking: Optional[str] = None,
+        prompt_to_llm: Optional[str] = None,
+    ) -> None:
+        try:
+            log_chat_turn(
+                user_input=user_prompt,
+                thinking=assistant_thinking if thinking is None else thinking,
+                answer=answer,
+                prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
+                handling_time_ms=elapsed_ms(),
+            )
+        except Exception as log_err:
+            print(f"chat log write failed: {log_err}")
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -555,6 +619,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     {"role": "user", "content": user_prompt},
                 ]
                 prompt_text = build_prompt_text(dbg_messages)
+                prompt_text_logged = prompt_text
                 yield sse_event({"type": "prompt", "text": prompt_text})
 
                 matched_count = filters_debug.get("matched_count", 0)
@@ -617,6 +682,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
+                write_chat_log(answer_text, thinking="", prompt_to_llm=prompt_text)
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -702,6 +768,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 })
 
                 prompt_text = build_prompt_text(messages)
+                prompt_text_logged = prompt_text
                 yield sse_event({"type": "prompt", "text": prompt_text})
 
                 yield sse_event({
@@ -744,6 +811,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
+                write_chat_log(assistant_answer)
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -771,6 +839,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
             messages.append({"role": "user", "content": user_prompt})
 
             prompt_text = build_prompt_text(messages)
+            prompt_text_logged = prompt_text
             yield sse_event({"type": "prompt", "text": prompt_text})
 
             yield sse_event({
@@ -812,6 +881,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
             messages.append({"role": "user", "content": user_prompt})
 
             prompt_text = build_prompt_text(messages)
+            prompt_text_logged = prompt_text
             yield sse_event({"type": "prompt", "text": prompt_text})
 
             yield sse_event({
@@ -856,6 +926,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
         sessions[session_id] = trim_history(history, max_turns=4)
 
+        write_chat_log(assistant_answer)
         yield sse_event({
             "type": "done",
             "is_db_query": is_db_query,
@@ -867,6 +938,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         })
 
     except Exception as e:
+        write_chat_log(assistant_answer or f"[ERROR] {e}")
         yield sse_event({"type": "error", "error": str(e)})
 
 
