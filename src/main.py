@@ -521,8 +521,8 @@ def sse_event(payload: Dict[str, Any]) -> str:
 # Chat interaction CSV log
 # =========================================================
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR", _PROJECT_ROOT / "logs"))
-CHAT_LOG_CSV = CHAT_LOG_DIR / os.getenv("CHAT_LOG_FILE", "chat_log.csv")
+CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR") or str(_PROJECT_ROOT / "logs"))
+CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
     "User input",

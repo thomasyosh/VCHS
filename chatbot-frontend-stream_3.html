@@ -435,20 +435,6 @@
       reportFilename = "report.html";
     }
 
-    function clearOutputForNewTurn() {
-      thinkingEl.textContent = "";
-      answerEl.textContent = "";
-      answerFooterEl.textContent = "";
-      debugEl.textContent = "";
-      debugWrap.style.display = "none";
-      promptViewEl.textContent = "";
-      setStatusTag("", false);
-
-      currentIsReport = false;
-      currentReportHtml = "";
-      reportFilename = "report.html";
-    }
-
     function appendText(el, text) {
       el.textContent += text;
     }
@@ -478,13 +464,7 @@
         return;
       }
 
-      let outputClearedForTurn = false;
-      function ensureOutputClearedForNewTurn() {
-        if (outputClearedForTurn) return;
-        clearOutputForNewTurn();
-        outputClearedForTurn = true;
-      }
-
+      clearOutput();
       isStreaming = true;
       sendBtn.disabled = true;
       setStatus("串流中...");
@@ -534,11 +514,9 @@
             const type = data.type;
 
             if (type === "prompt") {
-              ensureOutputClearedForNewTurn();
               promptViewEl.textContent = data.text || "";
               setStatus("已收到 prompt，等待模型回應...");
             } else if (type === "debug") {
-              ensureOutputClearedForNewTurn();
               debugWrap.style.display = "block";
               debugEl.textContent = JSON.stringify(data, null, 2);
 
@@ -549,11 +527,9 @@
                   "提示：系統正以報告模式產生 HTML，完成後會自動下載報告檔案。";
               }
             } else if (type === "thinking") {
-              ensureOutputClearedForNewTurn();
               appendText(thinkingEl, data.text || "");
               setStatus("模型思考中...");
             } else if (type === "answer") {
-              ensureOutputClearedForNewTurn();
               appendText(answerEl, data.text || "");
               setStatus("模型回覆中...");
 
@@ -561,7 +537,6 @@
                 currentReportHtml += data.text || "";
               }
             } else if (type === "error") {
-              ensureOutputClearedForNewTurn();
               appendText(answerEl, "\n[ERROR] " + (data.error || "unknown error"));
               setStatus("發生錯誤");
               setStatusTag("錯誤", true);
@@ -590,12 +565,10 @@
                   const a = document.createElement("a");
                   a.href = url;
                   a.download = reportFilename;
-                  a.style.display = "none";
-                  a.rel = "noopener";
                   document.body.appendChild(a);
                   a.click();
                   document.body.removeChild(a);
-                  setTimeout(() => URL.revokeObjectURL(url), 1000);
+                  URL.revokeObjectURL(url);
 
                   setStatusTag("已下載報告", true);
                   answerFooterEl.textContent =
@@ -616,9 +589,6 @@
         }
       } catch (err) {
         console.error(err);
-        if (!outputClearedForTurn) {
-          clearOutputForNewTurn();
-        }
         appendText(answerEl, "[ERROR] " + err.message);
         setStatus("請求失敗");
         setStatusTag("錯誤", true);
@@ -654,18 +624,11 @@
       }
     }
 
-    sendBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      sendMessage();
-    });
-    resetBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      resetSession();
-    });
+    sendBtn.addEventListener("click", sendMessage);
+    resetBtn.addEventListener("click", resetSession);
 
     promptEl.addEventListener("keydown", (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-        e.preventDefault();
         sendMessage();
       }
     });
