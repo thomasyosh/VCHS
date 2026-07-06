@@ -544,6 +544,8 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     assistant_thinking = ""
 
     try:
+        yield sse_event({"type": "status", "text": "已收到問題，準備處理..."})
+
         history = trim_history(sessions.get(session_id, []))
         is_db_query = looks_like_db_query(user_prompt)
         filters_debug: Dict[str, Any] = {}
@@ -552,8 +554,27 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
         # ========== DB 問題 ==========
         if is_db_query:
-            rows, cases_file = fetch_and_cache_cases(limit=300)
+            yield sse_event({"type": "status", "text": "正在從 Supabase 下載最新案件資料..."})
+            try:
+                rows, cases_file = fetch_and_cache_cases(limit=300)
+            except Exception as exc:
+                yield sse_event({"type": "error", "error": f"無法取得案件資料：{exc}"})
+                yield sse_event({
+                    "type": "done",
+                    "is_db_query": True,
+                    "query_type": None,
+                    "thinking_chars": 0,
+                    "answer_chars": 0,
+                    "answered_by": "error",
+                    "report_mode": False,
+                })
+                return
+
             rows_loaded = len(rows)
+            yield sse_event({
+                "type": "status",
+                "text": f"案件資料已就緒（{rows_loaded} 筆），正在分析...",
+            })
             query_type = classify_query_type(user_prompt)
 
             if query_type == "detail":
@@ -739,6 +760,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "report_mode": True,
                 })
 
+                yield sse_event({"type": "status", "text": "正在透過 Ollama 生成報告（可能需時數分鐘）..."})
                 stream = llm_client.chat.completions.create(
                     model=OLLAMA_MODEL,
                     messages=messages,
@@ -808,6 +830,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 "report_mode": False,
             })
 
+            yield sse_event({"type": "status", "text": "正在連接 Ollama，模型可能需要數分鐘才開始回覆..."})
             stream = llm_client.chat.completions.create(
                 model=OLLAMA_MODEL,
                 messages=messages,
@@ -849,6 +872,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 "report_mode": False,
             })
 
+            yield sse_event({"type": "status", "text": "正在連接 Ollama，模型可能需要數分鐘才開始回覆..."})
             stream = llm_client.chat.completions.create(
                 model=OLLAMA_MODEL,
                 messages=messages,
@@ -937,6 +961,11 @@ async def chat(request: Request):
     return StreamingResponse(
         openai_stream_generator(user_prompt, session_id),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

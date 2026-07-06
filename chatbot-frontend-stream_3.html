@@ -342,6 +342,7 @@
           <button id="sendBtn" type="button">
             <span>發送</span>
           </button>
+          <button id="exampleBtn" type="button" class="secondary">填入示例問題</button>
         </div>
       </div>
     </div>
@@ -390,6 +391,7 @@
     const sessionIdEl = document.getElementById("sessionId");
     const promptEl = document.getElementById("prompt");
     const sendBtn = document.getElementById("sendBtn");
+    const exampleBtn = document.getElementById("exampleBtn");
     const resetBtn = document.getElementById("resetBtn");
     const statusEl = document.getElementById("status");
     const statusTagEl = document.getElementById("statusTag");
@@ -401,6 +403,11 @@
     const promptViewEl = document.getElementById("promptView");
 
     let isStreaming = false;
+    let activeAbortController = null;
+    let waitTimerId = null;
+
+    const EXAMPLE_PROMPT =
+      "我要大埔和中西區嚴重個案既詳細記錄, 將佢製作成報告比我";
 
     // 報告相關 state（每輪請求會 reset）
     let currentIsReport = false;
@@ -419,6 +426,22 @@
       }
       statusTagEl.style.display = "inline-flex";
       statusTagEl.textContent = text;
+    }
+
+    function clearWaitTimer() {
+      if (waitTimerId) {
+        clearInterval(waitTimerId);
+        waitTimerId = null;
+      }
+    }
+
+    function startWaitTimer(baseText) {
+      clearWaitTimer();
+      const startedAt = Date.now();
+      waitTimerId = setInterval(() => {
+        const secs = Math.floor((Date.now() - startedAt) / 1000);
+        setStatus(`${baseText}（已等待 ${secs} 秒，DeepSeek-R1 可能先顯示思考過程）`);
+      }, 1000);
     }
 
     function clearOutput() {
@@ -453,28 +476,40 @@
     }
 
     async function sendMessage() {
-      if (isStreaming) return;
+      if (isStreaming) {
+        setStatus("上一個請求仍在進行中；如已卡住，請重新整理頁面後再試");
+        return;
+      }
 
       const apiUrl = apiUrlEl.value.trim();
       const sessionId = sessionIdEl.value.trim() || "default";
       const prompt = promptEl.value.trim();
 
-      if (!apiUrl || !prompt) {
-        setStatus("請輸入 API URL 同問題");
+      if (!apiUrl) {
+        setStatus("請輸入 API URL");
+        return;
+      }
+      if (!prompt) {
+        setStatus("請在問題欄輸入內容（灰色 placeholder 不會自動送出，可按「填入示例問題」）");
         return;
       }
 
       clearOutput();
+      clearWaitTimer();
       isStreaming = true;
       sendBtn.disabled = true;
+      exampleBtn.disabled = true;
       setStatus("串流中...");
       setStatusTag("等待回應", true);
+
+      activeAbortController = new AbortController();
 
       try {
         const response = await fetch(apiUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, session_id: sessionId })
+          body: JSON.stringify({ prompt, session_id: sessionId }),
+          signal: activeAbortController.signal,
         });
 
         if (!response.ok) {
@@ -513,9 +548,11 @@
 
             const type = data.type;
 
-            if (type === "prompt") {
+            if (type === "status") {
+              setStatus(data.text || "處理中...");
+            } else if (type === "prompt") {
               promptViewEl.textContent = data.text || "";
-              setStatus("已收到 prompt，等待模型回應...");
+              startWaitTimer("已收到 prompt，等待模型回應");
             } else if (type === "debug") {
               debugWrap.style.display = "block";
               debugEl.textContent = JSON.stringify(data, null, 2);
@@ -527,9 +564,11 @@
                   "提示：系統正以報告模式產生 HTML，完成後會自動下載報告檔案。";
               }
             } else if (type === "thinking") {
+              clearWaitTimer();
               appendText(thinkingEl, data.text || "");
               setStatus("模型思考中...");
             } else if (type === "answer") {
+              clearWaitTimer();
               appendText(answerEl, data.text || "");
               setStatus("模型回覆中...");
 
@@ -537,10 +576,12 @@
                 currentReportHtml += data.text || "";
               }
             } else if (type === "error") {
+              clearWaitTimer();
               appendText(answerEl, "\n[ERROR] " + (data.error || "unknown error"));
               setStatus("發生錯誤");
               setStatusTag("錯誤", true);
             } else if (type === "done") {
+              clearWaitTimer();
               const thinkingChars = data.thinking_chars ?? 0;
               const answerChars = data.answer_chars ?? 0;
               const answeredBy = data.answered_by || "llm";
@@ -588,14 +629,29 @@
           }
         }
       } catch (err) {
+        clearWaitTimer();
         console.error(err);
-        appendText(answerEl, "[ERROR] " + err.message);
-        setStatus("請求失敗");
+        if (err.name === "AbortError") {
+          appendText(answerEl, "[ERROR] 請求已取消");
+          setStatus("請求已取消");
+        } else {
+          appendText(answerEl, "[ERROR] " + err.message);
+          setStatus("請求失敗");
+        }
         setStatusTag("錯誤", true);
       } finally {
+        clearWaitTimer();
         isStreaming = false;
         sendBtn.disabled = false;
+        exampleBtn.disabled = false;
+        activeAbortController = null;
       }
+    }
+
+    function fillExamplePrompt() {
+      promptEl.value = EXAMPLE_PROMPT;
+      promptEl.focus();
+      setStatus("已填入示例問題，請按「發送」");
     }
 
     async function resetSession() {
@@ -625,6 +681,7 @@
     }
 
     sendBtn.addEventListener("click", sendMessage);
+    exampleBtn.addEventListener("click", fillExamplePrompt);
     resetBtn.addEventListener("click", resetSession);
 
     promptEl.addEventListener("keydown", (e) => {
