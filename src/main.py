@@ -1,4 +1,5 @@
 import csv
+import html
 import os
 import json
 import re
@@ -211,6 +212,102 @@ def select_report_template(user_prompt: str) -> str:
     # example 將來:
     # if "layout1" in t: return "layout1"
     return "default"
+
+
+REPORT_CASE_FIELDS: List[Tuple[str, str]] = [
+    ("case_no", "案件編號"),
+    ("case_date", "日期"),
+    ("district", "地區"),
+    ("street", "街道"),
+    ("complaint_type", "投訴類型"),
+    ("tree_species", "樹木種類"),
+    ("tree_count", "樹木數量"),
+    ("severity", "嚴重程度"),
+    ("contractor", "承辦商"),
+    ("status", "狀態"),
+]
+CASE_PLACEHOLDER_RE = re.compile(r"\{\{\s*case\.(\w+)\s*\}\}", re.IGNORECASE)
+CASE_ROW_TEMPLATE_RE = re.compile(
+    r"<tr[^>]*>.*?\{\{\s*case\.\w+.*?</tr>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _expand_case_placeholders(text: str, case: Dict[str, str]) -> str:
+    def repl(match: re.Match) -> str:
+        return html.escape(case.get(match.group(1), ""), quote=True)
+
+    return CASE_PLACEHOLDER_RE.sub(repl, text)
+
+
+def build_cases_details_table(rows: List[Dict[str, str]]) -> str:
+    header_cells = "".join(f"<th>{label}</th>" for _, label in REPORT_CASE_FIELDS)
+    body_rows: List[str] = []
+    for case in rows:
+        cells = "".join(
+            f"<td>{html.escape(case.get(key, ''), quote=True)}</td>"
+            for key, _ in REPORT_CASE_FIELDS
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+    return (
+        '<table class="cases-detail">'
+        f"<thead><tr>{header_cells}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+    )
+
+
+def finalize_report_html(html_text: str, rows: List[Dict[str, str]]) -> str:
+    """
+    Replace LLM template placeholders (e.g. {{case.case_no}}) with real case data.
+    Keeps the streamed HTML layout when possible; falls back to a server-built table.
+    """
+    if not html_text or not rows:
+        return html_text
+    if "{{" not in html_text:
+        return html_text
+
+    finalized = html_text
+    row_match = CASE_ROW_TEMPLATE_RE.search(finalized)
+    if row_match:
+        template_row = row_match.group(0)
+        expanded_rows = "\n".join(
+            _expand_case_placeholders(template_row, case) for case in rows
+        )
+        finalized = (
+            finalized[: row_match.start()] + expanded_rows + finalized[row_match.end() :]
+        )
+
+    if CASE_PLACEHOLDER_RE.search(finalized):
+        if len(rows) == 1:
+            finalized = _expand_case_placeholders(finalized, rows[0])
+        else:
+            table_match = re.search(
+                r"<table[^>]*>.*?\{\{\s*case\.\w+.*?</table>",
+                finalized,
+                re.DOTALL | re.IGNORECASE,
+            )
+            details_table = build_cases_details_table(rows)
+            if table_match:
+                finalized = (
+                    finalized[: table_match.start()]
+                    + details_table
+                    + finalized[table_match.end() :]
+                )
+            elif "</body>" in finalized.lower():
+                body_end = finalized.lower().rfind("</body>")
+                finalized = (
+                    finalized[:body_end]
+                    + details_table
+                    + finalized[body_end:]
+                )
+            else:
+                finalized = finalized + details_table
+
+    if CASE_PLACEHOLDER_RE.search(finalized):
+        finalized = CASE_PLACEHOLDER_RE.sub("", finalized)
+
+    return finalized
 
 
 def extract_districts(text: str) -> List[str]:
@@ -894,6 +991,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 sessions[session_id] = trim_history(history, max_turns=4)
 
                 schedule_chat_log(assistant_answer)
+                finalized_report_html = finalize_report_html(assistant_answer, compact_rows)
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -903,6 +1001,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "answered_by": "llm-html-report",
                     "report_mode": True,
                     "filename": "tree_cases_report.html",
+                    "report_html": finalized_report_html,
                 })
                 return
 

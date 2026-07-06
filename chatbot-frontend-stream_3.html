@@ -549,12 +549,12 @@
                 `完成：thinking ${thinkingChars} chars, answer ${answerChars} chars（${answeredBy}）`
               );
 
-              if (data.report_mode && currentReportHtml) {
+              if (data.report_mode && (data.report_html || currentReportHtml)) {
                 if (data.filename) {
                   reportFilename = data.filename;
                 }
 
-                const cleanedHtml = extractHtmlFromText(currentReportHtml);
+                const cleanedHtml = extractHtmlFromText(data.report_html || currentReportHtml);
 
                 try {
                   const blob = new Blob(
