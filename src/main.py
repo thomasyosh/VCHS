@@ -905,7 +905,6 @@ def health():
 
 @app.get("/api/cases/download")
 def download_cases(limit: int = 300):
-    """Fetch latest tree_cases, save JSON, and return the file."""
     rows, saved_path = fetch_and_cache_cases(limit=limit)
     return FileResponse(
         path=saved_path,
@@ -917,7 +916,6 @@ def download_cases(limit: int = 300):
 
 @app.get("/api/cases")
 def get_cases_metadata(limit: int = 300):
-    """Fetch latest tree_cases, save JSON, and return metadata."""
     rows, saved_path = fetch_and_cache_cases(limit=limit)
     return {
         "ok": True,
