@@ -613,7 +613,11 @@ def log_chat_turn(
 # =========================================================
 # 主 streaming generator
 # =========================================================
-def openai_stream_generator(user_prompt: str, session_id: str):
+def openai_stream_generator(
+    user_prompt: str,
+    session_id: str,
+    log_capture: Dict[str, Any],
+):
     fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     start_time = time.perf_counter()
     assistant_answer = ""
@@ -633,19 +637,19 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         nonlocal chat_logged
         if chat_logged:
             return
-        try:
-            log_chat_turn(
-                fetched_at=fetched_at,
-                user_input=user_prompt,
-                thinking=assistant_thinking if thinking is None else thinking,
-                answer=answer,
-                prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
-                handling_time=format_handling_time(elapsed_ms()),
-                model_used=model_used or OLLAMA_MODEL or "unknown",
-            )
-            chat_logged = True
-        except Exception as log_err:
-            print(f"chat log write failed: {log_err}", flush=True)
+        log_capture.clear()
+        log_capture.update(
+            {
+                "fetched_at": fetched_at,
+                "user_input": user_prompt,
+                "thinking": assistant_thinking if thinking is None else thinking,
+                "answer": answer,
+                "prompt_to_llm": prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
+                "handling_time": format_handling_time(elapsed_ms()),
+                "model_used": model_used or OLLAMA_MODEL or "unknown",
+            }
+        )
+        chat_logged = True
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -1008,9 +1012,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     except Exception as e:
         schedule_chat_log(assistant_answer or f"[ERROR] {e}")
         yield sse_event({"type": "error", "error": str(e)})
-    finally:
-        if not chat_logged:
-            schedule_chat_log(assistant_answer)
 
 
 # =========================================================
@@ -1030,8 +1031,20 @@ async def chat(request: Request):
     if not user_prompt:
         return JSONResponse({"error": "prompt is empty"}, status_code=400)
 
+    log_capture: Dict[str, Any] = {}
+
+    def stream_with_chat_log():
+        try:
+            yield from openai_stream_generator(user_prompt, session_id, log_capture)
+        finally:
+            if log_capture:
+                try:
+                    log_chat_turn(**log_capture)
+                except Exception as log_err:
+                    print(f"chat log write failed: {log_err}", flush=True)
+
     return StreamingResponse(
-        openai_stream_generator(user_prompt, session_id),
+        stream_with_chat_log(),
         media_type="text/event-stream",
     )
 
