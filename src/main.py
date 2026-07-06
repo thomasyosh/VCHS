@@ -519,13 +519,14 @@ def sse_event(payload: Dict[str, Any]) -> str:
 
 # =========================================================
 # Chat interaction CSV log (server-side only)
-# Default path is OUTSIDE the project folder so Live Server
-# (port 5501) does not auto-reload the browser when a row is appended.
+# Default: <project>/logs/chat_log.csv
+# Live Server ignore for logs/ is set in .vscode/settings.json
 # =========================================================
-_DEFAULT_LOG_DIR = Path.home() / "VCHS" / "logs"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_LOG_DIR = _PROJECT_ROOT / "logs"
 CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR") or str(_DEFAULT_LOG_DIR))
 CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
-print(f"[chat log] CSV path: {CHAT_LOG_CSV}")
+print(f"[chat log] CSV path: {CHAT_LOG_CSV.resolve()}", flush=True)
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
     "Fetched at",
@@ -589,6 +590,7 @@ def log_chat_turn(
                 os.fsync(f.fileno())
             except OSError:
                 pass
+    print(f"[chat log] row appended -> {CHAT_LOG_CSV.resolve()}", flush=True)
 
 
 # =========================================================
@@ -600,6 +602,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     assistant_answer = ""
     assistant_thinking = ""
     prompt_text_logged = ""
+    chat_logged = False
 
     def elapsed_ms() -> int:
         return round((time.perf_counter() - start_time) * 1000)
@@ -610,6 +613,9 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         prompt_to_llm: Optional[str] = None,
         model_used: Optional[str] = None,
     ) -> None:
+        nonlocal chat_logged
+        if chat_logged:
+            return
         try:
             log_chat_turn(
                 fetched_at=fetched_at,
@@ -620,6 +626,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 handling_time=format_handling_time(elapsed_ms()),
                 model_used=model_used or OLLAMA_MODEL or "unknown",
             )
+            chat_logged = True
         except Exception as log_err:
             print(f"chat log write failed: {log_err}", flush=True)
 
@@ -984,6 +991,9 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     except Exception as e:
         schedule_chat_log(assistant_answer or f"[ERROR] {e}")
         yield sse_event({"type": "error", "error": str(e)})
+    finally:
+        if not chat_logged:
+            schedule_chat_log(assistant_answer)
 
 
 # =========================================================
