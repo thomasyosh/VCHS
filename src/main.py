@@ -570,23 +570,28 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     def elapsed_ms() -> int:
         return round((time.perf_counter() - start_time) * 1000)
 
-    def write_chat_log(
+    def schedule_chat_log(
         answer: str,
         thinking: Optional[str] = None,
         prompt_to_llm: Optional[str] = None,
         model_used: Optional[str] = None,
     ) -> None:
-        try:
-            log_chat_turn(
-                user_input=user_prompt,
-                thinking=assistant_thinking if thinking is None else thinking,
-                answer=answer,
-                prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
-                handling_time_ms=elapsed_ms(),
-                model_used=model_used or OLLAMA_MODEL or "unknown",
-            )
-        except Exception as log_err:
-            print(f"chat log write failed: {log_err}")
+        log_payload = {
+            "user_input": user_prompt,
+            "thinking": assistant_thinking if thinking is None else thinking,
+            "answer": answer,
+            "prompt_to_llm": prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
+            "handling_time_ms": elapsed_ms(),
+            "model_used": model_used or OLLAMA_MODEL or "unknown",
+        }
+
+        def _write() -> None:
+            try:
+                log_chat_turn(**log_payload)
+            except Exception as log_err:
+                print(f"chat log write failed: {log_err}")
+
+        threading.Thread(target=_write, daemon=True).start()
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -695,7 +700,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "answered_by": "backend",
                     "report_mode": False,
                 })
-                write_chat_log(
+                schedule_chat_log(
                     answer_text,
                     thinking="",
                     prompt_to_llm=prompt_text,
@@ -830,7 +835,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "report_mode": True,
                     "filename": "tree_cases_report.html",
                 })
-                write_chat_log(assistant_answer)
+                schedule_chat_log(assistant_answer)
                 return
 
             # ---- 其他 DB 類（detail 但無報告 / generic）→ 普通 Q&A，用 LLM ----
@@ -944,11 +949,11 @@ def openai_stream_generator(user_prompt: str, session_id: str):
             "answered_by": "llm",
             "report_mode": False,
         })
-        write_chat_log(assistant_answer)
+        schedule_chat_log(assistant_answer)
 
     except Exception as e:
         yield sse_event({"type": "error", "error": str(e)})
-        write_chat_log(assistant_answer or f"[ERROR] {e}")
+        schedule_chat_log(assistant_answer or f"[ERROR] {e}")
 
 
 # =========================================================
