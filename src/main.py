@@ -530,7 +530,32 @@ CHAT_LOG_COLUMNS = [
     "Answer",
     "Prompt to LLM",
     "Handling time",
+    "Model used",
 ]
+
+
+def _ollama_native_base_url() -> str:
+    base = (OLLAMA_BASE_URL or "").rstrip("/")
+    if base.endswith("/v1"):
+        return base[:-3]
+    return base
+
+
+def fetch_running_ollama_model() -> str:
+    """Return the model Ollama reports as loaded, or configured OLLAMA_MODEL."""
+    base = _ollama_native_base_url()
+    if base:
+        try:
+            resp = http_client.get(f"{base}/api/ps", timeout=5.0)
+            resp.raise_for_status()
+            models = resp.json().get("models") or []
+            if models:
+                name = models[0].get("model") or models[0].get("name")
+                if name:
+                    return name
+        except Exception:
+            pass
+    return OLLAMA_MODEL or "unknown"
 
 
 def _ensure_chat_log_header() -> None:
@@ -548,9 +573,10 @@ def log_chat_turn(
     answer: str,
     prompt_to_llm: str,
     handling_time_ms: int,
+    model_used: str,
 ) -> None:
     _ensure_chat_log_header()
-    row = [user_input, thinking, answer, prompt_to_llm, handling_time_ms]
+    row = [user_input, thinking, answer, prompt_to_llm, handling_time_ms, model_used]
     with _chat_log_lock:
         with CHAT_LOG_CSV.open("a", newline="", encoding="utf-8-sig") as f:
             csv.writer(f).writerow(row)
@@ -572,14 +598,19 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         answer: str,
         thinking: Optional[str] = None,
         prompt_to_llm: Optional[str] = None,
+        model_used: Optional[str] = None,
     ) -> None:
         try:
+            resolved_model = model_used
+            if resolved_model is None:
+                resolved_model = fetch_running_ollama_model()
             log_chat_turn(
                 user_input=user_prompt,
                 thinking=assistant_thinking if thinking is None else thinking,
                 answer=answer,
                 prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
                 handling_time_ms=elapsed_ms(),
+                model_used=resolved_model,
             )
         except Exception as log_err:
             print(f"chat log write failed: {log_err}")
@@ -682,7 +713,12 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
-                write_chat_log(answer_text, thinking="", prompt_to_llm=prompt_text)
+                write_chat_log(
+                    answer_text,
+                    thinking="",
+                    prompt_to_llm=prompt_text,
+                    model_used="backend",
+                )
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
