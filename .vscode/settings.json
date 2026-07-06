@@ -5,7 +5,6 @@
         "**/logs/**",
         "**/.git/**",
         "**/.venv/**",
-        "**/chat_log_path.txt",
         "**/*.csv"
     ]
 }

@@ -519,31 +519,32 @@ def sse_event(payload: Dict[str, Any]) -> str:
 
 # =========================================================
 # Chat interaction CSV log (server-side only)
-# Stored OUTSIDE the project folder so Live Server (port 5501)
-# does not reload the browser when a row is appended.
-# See chat_log_path.txt in the project root for the exact path.
+# Default: logs/chat_log.csv (relative to project root)
+# Override with CHAT_LOG_DIR / CHAT_LOG_FILE in .env
 # =========================================================
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-_DEFAULT_LOG_DIR = Path.home() / "VCHS" / "logs"
-CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR") or str(_DEFAULT_LOG_DIR))
+
+
+def _resolve_chat_log_dir() -> Path:
+    raw = (os.getenv("CHAT_LOG_DIR") or "logs").strip() or "logs"
+    path = Path(raw)
+    if path.is_absolute():
+        return path
+    return _PROJECT_ROOT / path
+
+
+CHAT_LOG_DIR = _resolve_chat_log_dir()
 CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
 
 
-def _write_log_pointer_file() -> None:
-    pointer = _PROJECT_ROOT / "chat_log_path.txt"
-    text = (
-        "Chat log CSV (updated after each completed chat):\n"
-        f"{CHAT_LOG_CSV.resolve()}\n"
-    )
+def _chat_log_display_path() -> str:
     try:
-        if not pointer.exists() or pointer.read_text(encoding="utf-8") != text:
-            pointer.write_text(text, encoding="utf-8")
-    except OSError:
-        pass
+        return CHAT_LOG_CSV.relative_to(_PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(CHAT_LOG_CSV)
 
 
-_write_log_pointer_file()
-print(f"[chat log] CSV path: {CHAT_LOG_CSV.resolve()}", flush=True)
+print(f"[chat log] CSV path: {_chat_log_display_path()}", flush=True)
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
     "Fetched at",
@@ -576,6 +577,17 @@ def trim_log_field(text: str) -> str:
     return "\n".join(lines)
 
 
+def _csv_needs_header() -> bool:
+    if not CHAT_LOG_CSV.exists() or CHAT_LOG_CSV.stat().st_size == 0:
+        return True
+    try:
+        with CHAT_LOG_CSV.open("r", encoding="utf-8-sig") as f:
+            first_line = f.readline()
+        return "Fetched at" not in first_line
+    except OSError:
+        return True
+
+
 def log_chat_turn(
     fetched_at: str,
     user_input: str,
@@ -596,7 +608,7 @@ def log_chat_turn(
     ]
     with _chat_log_lock:
         CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        write_header = not CHAT_LOG_CSV.exists() or CHAT_LOG_CSV.stat().st_size == 0
+        write_header = _csv_needs_header()
         with CHAT_LOG_CSV.open("a", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             if write_header:
@@ -607,17 +619,13 @@ def log_chat_turn(
                 os.fsync(f.fileno())
             except OSError:
                 pass
-    print(f"[chat log] row appended -> {CHAT_LOG_CSV.resolve()}", flush=True)
+    print(f"[chat log] row appended -> {_chat_log_display_path()}", flush=True)
 
 
 # =========================================================
 # 主 streaming generator
 # =========================================================
-def openai_stream_generator(
-    user_prompt: str,
-    session_id: str,
-    log_capture: Dict[str, Any],
-):
+def openai_stream_generator(user_prompt: str, session_id: str):
     fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     start_time = time.perf_counter()
     assistant_answer = ""
@@ -637,19 +645,21 @@ def openai_stream_generator(
         nonlocal chat_logged
         if chat_logged:
             return
-        log_capture.clear()
-        log_capture.update(
-            {
-                "fetched_at": fetched_at,
-                "user_input": user_prompt,
-                "thinking": assistant_thinking if thinking is None else thinking,
-                "answer": answer,
-                "prompt_to_llm": prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
-                "handling_time": format_handling_time(elapsed_ms()),
-                "model_used": model_used or OLLAMA_MODEL or "unknown",
-            }
-        )
-        chat_logged = True
+        try:
+            log_chat_turn(
+                fetched_at=fetched_at,
+                user_input=user_prompt,
+                thinking=assistant_thinking if thinking is None else thinking,
+                answer=answer,
+                prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
+                handling_time=format_handling_time(elapsed_ms()),
+                model_used=model_used or OLLAMA_MODEL or "unknown",
+            )
+            chat_logged = True
+        except Exception as log_err:
+            import traceback
+            print(f"chat log write failed: {log_err}", flush=True)
+            print(traceback.format_exc(), flush=True)
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -1019,7 +1029,12 @@ def openai_stream_generator(
 # =========================================================
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "tree-cases-chatbot-multi-filter-report"}
+    return {
+        "ok": True,
+        "service": "tree-cases-chatbot-multi-filter-report",
+        "chat_log_enabled": True,
+        "chat_log_csv": _chat_log_display_path(),
+    }
 
 
 @app.post("/api/chat")
@@ -1031,20 +1046,8 @@ async def chat(request: Request):
     if not user_prompt:
         return JSONResponse({"error": "prompt is empty"}, status_code=400)
 
-    log_capture: Dict[str, Any] = {}
-
-    def stream_with_chat_log():
-        try:
-            yield from openai_stream_generator(user_prompt, session_id, log_capture)
-        finally:
-            if log_capture:
-                try:
-                    log_chat_turn(**log_capture)
-                except Exception as log_err:
-                    print(f"chat log write failed: {log_err}", flush=True)
-
     return StreamingResponse(
-        stream_with_chat_log(),
+        openai_stream_generator(user_prompt, session_id),
         media_type="text/event-stream",
     )
 
