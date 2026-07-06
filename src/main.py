@@ -2,6 +2,7 @@ import os
 import json
 import re
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, date
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
@@ -21,13 +22,16 @@ load_dotenv()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
 COMPANY_PROXY = os.getenv("COMPANY_PROXY")
-NO_PROXY = os.getenv("NO_PROXY")
+NO_PROXY = (os.getenv("NO_PROXY") or "").strip().strip('"').strip("'")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_FETCH_TIMEOUT_SEC = float(os.getenv("SUPABASE_FETCH_TIMEOUT_SEC", "45"))
 
-os.environ["HTTP_PROXY"] = COMPANY_PROXY
-os.environ["HTTPS_PROXY"] = COMPANY_PROXY
-os.environ["NO_PROXY"] =  NO_PROXY
+if COMPANY_PROXY:
+    os.environ["HTTP_PROXY"] = COMPANY_PROXY
+    os.environ["HTTPS_PROXY"] = COMPANY_PROXY
+if NO_PROXY:
+    os.environ["NO_PROXY"] = NO_PROXY
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variable.")
@@ -51,9 +55,12 @@ app.add_middleware(
 )
 
 # =========================================================
-# Ollama OpenAI-compatible client
+# Ollama OpenAI-compatible client (bypass corporate proxy for localhost)
 # =========================================================
-http_client = httpx.Client(timeout=120.0, trust_env=True)
+http_client = httpx.Client(
+    timeout=httpx.Timeout(120.0, connect=15.0),
+    trust_env=False,
+)
 
 llm_client = OpenAI(
     base_url=OLLAMA_BASE_URL,
@@ -351,14 +358,40 @@ def load_cases_from_file(path: Optional[Path] = None) -> List[Dict[str, Any]]:
     return []
 
 
-def fetch_and_cache_cases(limit: int = 300) -> Tuple[List[Dict[str, Any]], Path]:
+def fetch_and_cache_cases(
+    limit: int = 300,
+    timeout_sec: float = SUPABASE_FETCH_TIMEOUT_SEC,
+) -> Tuple[List[Dict[str, Any]], Path, str]:
     """
     Fetch cases from Supabase, save JSON to disk, then return rows for querying.
-    All DB / LLM queries should use this instead of fetch_all_cases directly.
+    Falls back to the local cache file if the remote fetch times out or fails.
     """
-    rows = fetch_all_cases(limit=limit)
+    source = "supabase"
+    rows: List[Dict[str, Any]] = []
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fetch_all_cases, limit)
+            rows = future.result(timeout=timeout_sec)
+    except FuturesTimeoutError as exc:
+        cached = load_cases_from_file()
+        if cached:
+            source = "cache-timeout"
+            rows = cached
+        else:
+            raise TimeoutError(
+                f"Supabase fetch timed out after {timeout_sec}s and no local cache exists."
+            ) from exc
+    except Exception:
+        cached = load_cases_from_file()
+        if cached:
+            source = "cache-error"
+            rows = cached
+        else:
+            raise
+
     saved_path = save_cases_to_file(rows)
-    return rows, saved_path
+    return rows, saved_path, source
 
 
 def trim_history(history: List[Dict[str, str]], max_turns: int = 4) -> List[Dict[str, str]]:
@@ -567,16 +600,24 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     assistant_thinking = ""
 
     try:
+        yield sse_event({"type": "status", "text": "已收到問題，準備處理..."})
+
         history = trim_history(sessions.get(session_id, []))
         is_db_query = looks_like_db_query(user_prompt)
         filters_debug: Dict[str, Any] = {}
         rows_loaded = 0
         query_type = None
+        cases_source = None
 
         # ========== DB 問題 ==========
         if is_db_query:
-            rows, cases_file = fetch_and_cache_cases(limit=300)
+            yield sse_event({"type": "status", "text": "正在從 Supabase 下載案件資料並儲存 JSON..."})
+            rows, cases_file, cases_source = fetch_and_cache_cases(limit=300)
             rows_loaded = len(rows)
+            yield sse_event({
+                "type": "status",
+                "text": f"案件資料已就緒（{rows_loaded} 筆，來源：{cases_source}，檔案：{cases_file}）",
+            })
             query_type = classify_query_type(user_prompt)
 
             if query_type == "detail":
@@ -762,6 +803,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "report_mode": True,
                 })
 
+                yield sse_event({"type": "status", "text": "正在透過 Ollama 生成 HTML 報告..."})
                 stream = llm_client.chat.completions.create(
                     model=OLLAMA_MODEL,
                     messages=messages,
@@ -831,6 +873,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 "report_mode": False,
             })
 
+            yield sse_event({"type": "status", "text": "正在透過 Ollama 分析案件資料..."})
             stream = llm_client.chat.completions.create(
                 model=OLLAMA_MODEL,
                 messages=messages,
@@ -855,6 +898,8 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
         # ========== 非 DB 問題：普通 chat ==========
         else:
+            yield sse_event({"type": "status", "text": f"正在連接 Ollama 模型（{OLLAMA_MODEL}）..."})
+
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             messages.extend(history)
             messages.append({"role": "user", "content": user_prompt})
@@ -872,6 +917,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 "report_mode": False,
             })
 
+            yield sse_event({"type": "status", "text": "Ollama 已連接，等待模型回應..."})
             stream = llm_client.chat.completions.create(
                 model=OLLAMA_MODEL,
                 messages=messages,
@@ -932,22 +978,23 @@ def download_cases(limit: int = 300):
     Fetch cases from Supabase, save JSON locally, and return the file for download.
     Use this to refresh data before querying without sending a chat message.
     """
-    rows, saved_path = fetch_and_cache_cases(limit=limit)
+    rows, saved_path, source = fetch_and_cache_cases(limit=limit)
     return FileResponse(
         path=saved_path,
         media_type="application/json",
         filename="tree_cases.json",
-        headers={"X-Cases-Count": str(len(rows))},
+        headers={"X-Cases-Count": str(len(rows)), "X-Cases-Source": source},
     )
 
 
 @app.get("/api/cases")
 def get_cases_metadata(limit: int = 300):
     """Fetch, persist, and return case metadata plus the saved file path."""
-    rows, saved_path = fetch_and_cache_cases(limit=limit)
+    rows, saved_path, source = fetch_and_cache_cases(limit=limit)
     return {
         "ok": True,
         "count": len(rows),
+        "source": source,
         "saved_to": str(saved_path),
         "fetched_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -965,6 +1012,11 @@ async def chat(request: Request):
     return StreamingResponse(
         openai_stream_generator(user_prompt, session_id),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

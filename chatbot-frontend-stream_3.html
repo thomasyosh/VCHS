@@ -311,7 +311,7 @@
     <div class="toolbar">
       <div class="field">
         <label for="apiUrl">API URL</label>
-        <input id="apiUrl" value="http://10.77.32.120:8020/api/chat" />
+        <input id="apiUrl" value="" />
       </div>
       <div class="field">
         <label for="sessionId">Session ID</label>
@@ -401,6 +401,21 @@
     const promptViewEl = document.getElementById("promptView");
 
     let isStreaming = false;
+
+    // Default API URL: same host as the page, port 8020
+    (function initApiUrl() {
+      const saved = localStorage.getItem("treeCasesApiUrl");
+      if (saved) {
+        apiUrlEl.value = saved;
+        return;
+      }
+      const host = window.location.hostname || "127.0.0.1";
+      apiUrlEl.value = `http://${host}:8020/api/chat`;
+    })();
+
+    apiUrlEl.addEventListener("change", () => {
+      localStorage.setItem("treeCasesApiUrl", apiUrlEl.value.trim());
+    });
 
     // 報告相關 state（每輪請求會 reset）
     let currentIsReport = false;
@@ -513,7 +528,9 @@
 
             const type = data.type;
 
-            if (type === "prompt") {
+            if (type === "status") {
+              setStatus(data.text || "處理中...");
+            } else if (type === "prompt") {
               promptViewEl.textContent = data.text || "";
               setStatus("已收到 prompt，等待模型回應...");
             } else if (type === "debug") {
