@@ -616,7 +616,7 @@ def sse_event(payload: Dict[str, Any]) -> str:
 
 # =========================================================
 # Chat interaction CSV log (server-side only)
-# Default: logs/chat_log.csv (relative to project root)
+# Default: logs/chat_log_YYYY-MM-DD.csv (daily rotation)
 # Override with CHAT_LOG_DIR / CHAT_LOG_FILE in .env
 # =========================================================
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -630,18 +630,40 @@ def _resolve_chat_log_dir() -> Path:
     return _PROJECT_ROOT / path
 
 
+def _chat_log_base_name() -> str:
+    raw = (os.getenv("CHAT_LOG_FILE") or "chat_log").strip() or "chat_log"
+    if raw.lower().endswith(".csv"):
+        raw = raw[:-4]
+    return raw
+
+
 CHAT_LOG_DIR = _resolve_chat_log_dir()
-CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
+CHAT_LOG_BASE = _chat_log_base_name()
 
 
-def _chat_log_display_path() -> str:
+def _chat_log_csv_for_date(log_date: date) -> Path:
+    return CHAT_LOG_DIR / f"{CHAT_LOG_BASE}_{log_date.isoformat()}.csv"
+
+
+def _parse_log_date(fetched_at: str) -> date:
     try:
-        return CHAT_LOG_CSV.relative_to(_PROJECT_ROOT).as_posix()
+        return datetime.strptime(fetched_at, "%Y-%m-%d %H:%M:%S").date()
     except ValueError:
-        return str(CHAT_LOG_CSV)
+        return date.today()
 
 
-print(f"[chat log] CSV path: {_chat_log_display_path()}", flush=True)
+def _chat_log_display_path(log_path: Optional[Path] = None) -> str:
+    path = log_path or _chat_log_csv_for_date(date.today())
+    try:
+        return path.relative_to(_PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+print(
+    f"[chat log] daily rotation: {_chat_log_display_path(CHAT_LOG_DIR / f'{CHAT_LOG_BASE}_YYYY-MM-DD.csv')}",
+    flush=True,
+)
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
     "Fetched at",
@@ -674,11 +696,11 @@ def trim_log_field(text: str) -> str:
     return "\n".join(lines)
 
 
-def _csv_needs_header() -> bool:
-    if not CHAT_LOG_CSV.exists() or CHAT_LOG_CSV.stat().st_size == 0:
+def _csv_needs_header(csv_path: Path) -> bool:
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
         return True
     try:
-        with CHAT_LOG_CSV.open("r", encoding="utf-8-sig") as f:
+        with csv_path.open("r", encoding="utf-8-sig") as f:
             first_line = f.readline()
         return "Fetched at" not in first_line
     except OSError:
@@ -703,10 +725,11 @@ def log_chat_turn(
         handling_time,
         model_used,
     ]
+    csv_path = _chat_log_csv_for_date(_parse_log_date(fetched_at))
     with _chat_log_lock:
         CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
-        write_header = _csv_needs_header()
-        with CHAT_LOG_CSV.open("a", newline="", encoding="utf-8-sig") as f:
+        write_header = _csv_needs_header(csv_path)
+        with csv_path.open("a", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             if write_header:
                 writer.writerow(CHAT_LOG_COLUMNS)
@@ -716,7 +739,7 @@ def log_chat_turn(
                 os.fsync(f.fileno())
             except OSError:
                 pass
-    print(f"[chat log] row appended -> {_chat_log_display_path()}", flush=True)
+    print(f"[chat log] row appended -> {_chat_log_display_path(csv_path)}", flush=True)
 
 
 # =========================================================
@@ -1132,7 +1155,9 @@ def health():
         "ok": True,
         "service": "tree-cases-chatbot-multi-filter-report",
         "chat_log_enabled": True,
+        "chat_log_rotation": "daily",
         "chat_log_csv": _chat_log_display_path(),
+        "chat_log_pattern": f"{CHAT_LOG_BASE}_YYYY-MM-DD.csv",
     }
 
 
