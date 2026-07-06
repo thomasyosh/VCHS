@@ -528,6 +528,7 @@ CHAT_LOG_CSV = CHAT_LOG_DIR / (os.getenv("CHAT_LOG_FILE") or "chat_log.csv")
 print(f"[chat log] CSV path: {CHAT_LOG_CSV}")
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
+    "Fetched at",
     "User input",
     "Thinking",
     "Answer",
@@ -537,15 +538,44 @@ CHAT_LOG_COLUMNS = [
 ]
 
 
+def format_handling_time(ms: int) -> str:
+    if ms < 1000:
+        return f"{ms} ms"
+    seconds = ms / 1000
+    if seconds < 60:
+        return f"{seconds:.2f} s"
+    minutes = int(seconds // 60)
+    remaining_seconds = seconds % 60
+    return f"{minutes} min {remaining_seconds:.1f} s"
+
+
+def trim_log_field(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.lstrip(" \t\r\n").splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    return "\n".join(lines)
+
+
 def log_chat_turn(
+    fetched_at: str,
     user_input: str,
     thinking: str,
     answer: str,
     prompt_to_llm: str,
-    handling_time_ms: int,
+    handling_time: str,
     model_used: str,
 ) -> None:
-    row = [user_input, thinking, answer, prompt_to_llm, handling_time_ms, model_used]
+    row = [
+        fetched_at,
+        user_input,
+        trim_log_field(thinking),
+        trim_log_field(answer),
+        prompt_to_llm,
+        handling_time,
+        model_used,
+    ]
     with _chat_log_lock:
         CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
         write_header = not CHAT_LOG_CSV.exists() or CHAT_LOG_CSV.stat().st_size == 0
@@ -562,6 +592,7 @@ def log_chat_turn(
 # 主 streaming generator
 # =========================================================
 def openai_stream_generator(user_prompt: str, session_id: str):
+    fetched_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     start_time = time.perf_counter()
     assistant_answer = ""
     assistant_thinking = ""
@@ -578,11 +609,12 @@ def openai_stream_generator(user_prompt: str, session_id: str):
     ) -> None:
         try:
             log_chat_turn(
+                fetched_at=fetched_at,
                 user_input=user_prompt,
                 thinking=assistant_thinking if thinking is None else thinking,
                 answer=answer,
                 prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
-                handling_time_ms=elapsed_ms(),
+                handling_time=format_handling_time(elapsed_ms()),
                 model_used=model_used or OLLAMA_MODEL or "unknown",
             )
         except Exception as log_err:
