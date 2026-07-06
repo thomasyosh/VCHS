@@ -585,7 +585,10 @@ def log_chat_turn(
                 writer.writerow(CHAT_LOG_COLUMNS)
             writer.writerow(row)
             f.flush()
-            os.fsync(f.fileno())
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
 
 
 # =========================================================
@@ -618,7 +621,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 model_used=model_used or OLLAMA_MODEL or "unknown",
             )
         except Exception as log_err:
-            print(f"chat log write failed: {log_err}")
+            print(f"chat log write failed: {log_err}", flush=True)
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -718,6 +721,12 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
+                schedule_chat_log(
+                    answer_text,
+                    thinking="",
+                    prompt_to_llm=prompt_text,
+                    model_used="backend",
+                )
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -727,12 +736,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "answered_by": "backend",
                     "report_mode": False,
                 })
-                schedule_chat_log(
-                    answer_text,
-                    thinking="",
-                    prompt_to_llm=prompt_text,
-                    model_used="backend",
-                )
                 return
 
             # ---- detail + 報告：LLM 砌 HTML，前端 download ----
@@ -852,6 +855,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
+                schedule_chat_log(assistant_answer)
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -862,7 +866,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "report_mode": True,
                     "filename": "tree_cases_report.html",
                 })
-                schedule_chat_log(assistant_answer)
                 return
 
             # ---- 其他 DB 類（detail 但無報告 / generic）→ 普通 Q&A，用 LLM ----
@@ -967,6 +970,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
         sessions[session_id] = trim_history(history, max_turns=4)
 
+        schedule_chat_log(assistant_answer)
         yield sse_event({
             "type": "done",
             "is_db_query": is_db_query,
@@ -976,11 +980,10 @@ def openai_stream_generator(user_prompt: str, session_id: str):
             "answered_by": "llm",
             "report_mode": False,
         })
-        schedule_chat_log(assistant_answer)
 
     except Exception as e:
-        yield sse_event({"type": "error", "error": str(e)})
         schedule_chat_log(assistant_answer or f"[ERROR] {e}")
+        yield sse_event({"type": "error", "error": str(e)})
 
 
 # =========================================================
