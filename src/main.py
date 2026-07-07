@@ -29,12 +29,21 @@ NO_PROXY = os.getenv("NO_PROXY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-os.environ["HTTP_PROXY"] = COMPANY_PROXY
-os.environ["HTTPS_PROXY"] = COMPANY_PROXY
-os.environ["NO_PROXY"] =  NO_PROXY
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+if COMPANY_PROXY:
+    os.environ["HTTP_PROXY"] = COMPANY_PROXY
+    os.environ["HTTPS_PROXY"] = COMPANY_PROXY
+if NO_PROXY:
+    os.environ["NO_PROXY"] = NO_PROXY
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variable.")
+
+if not OLLAMA_BASE_URL:
+    print("[warning] OLLAMA_BASE_URL is not set; LLM requests will fail.", flush=True)
+if not OLLAMA_MODEL:
+    print("[warning] OLLAMA_MODEL is not set; LLM requests will fail.", flush=True)
 
 # =========================================================
 # FastAPI
@@ -614,6 +623,31 @@ def sse_event(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+# Windows: WinError 233/64 often means the browser closed the SSE connection
+# or the console pipe broke (e.g. CMD window closed).
+_CLIENT_DISCONNECT_WINERRORS = {233, 64, 10054}
+
+
+def _safe_print(message: str) -> None:
+    try:
+        print(message, flush=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) not in _CLIENT_DISCONNECT_WINERRORS:
+            raise
+
+
+def _is_client_disconnect(exc: BaseException) -> bool:
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return True
+    if isinstance(exc, OSError):
+        winerror = getattr(exc, "winerror", None)
+        if winerror in _CLIENT_DISCONNECT_WINERRORS:
+            return True
+        if exc.errno in _CLIENT_DISCONNECT_WINERRORS:
+            return True
+    return False
+
+
 # =========================================================
 # Chat interaction CSV log (server-side only)
 # Default: logs/chat_log_YYYY-MM-DD.csv (daily rotation)
@@ -660,9 +694,8 @@ def _chat_log_display_path(log_path: Optional[Path] = None) -> str:
         return str(path)
 
 
-print(
+_safe_print(
     f"[chat log] daily rotation: {_chat_log_display_path(CHAT_LOG_DIR / f'{CHAT_LOG_BASE}_YYYY-MM-DD.csv')}",
-    flush=True,
 )
 _chat_log_lock = threading.Lock()
 CHAT_LOG_COLUMNS = [
@@ -739,7 +772,7 @@ def log_chat_turn(
                 os.fsync(f.fileno())
             except OSError:
                 pass
-    print(f"[chat log] row appended -> {_chat_log_display_path(csv_path)}", flush=True)
+    _safe_print(f"[chat log] row appended -> {_chat_log_display_path(csv_path)}")
 
 
 # =========================================================
@@ -778,8 +811,8 @@ def openai_stream_generator(user_prompt: str, session_id: str):
             chat_logged = True
         except Exception as log_err:
             import traceback
-            print(f"chat log write failed: {log_err}", flush=True)
-            print(traceback.format_exc(), flush=True)
+            _safe_print(f"chat log write failed: {log_err}")
+            _safe_print(traceback.format_exc())
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -792,7 +825,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         if is_db_query:
             rows = fetch_all_cases(limit=300)
             rows_loaded = len(rows)
-            print(rows)
             query_type = classify_query_type(user_prompt)
 
             if query_type == "detail":
@@ -1142,8 +1174,30 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         })
 
     except Exception as e:
+        if _is_client_disconnect(e):
+            return
         schedule_chat_log(assistant_answer or f"[ERROR] {e}")
         yield sse_event({"type": "error", "error": str(e)})
+
+
+async def _stream_chat_events(request: Request, user_prompt: str, session_id: str):
+    gen = openai_stream_generator(user_prompt, session_id)
+    try:
+        for chunk in gen:
+            if await request.is_disconnected():
+                return
+            try:
+                yield chunk
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                if _is_client_disconnect(exc):
+                    return
+                raise
+    except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+        if _is_client_disconnect(exc):
+            return
+        raise
+    finally:
+        gen.close()
 
 
 # =========================================================
@@ -1171,7 +1225,7 @@ async def chat(request: Request):
         return JSONResponse({"error": "prompt is empty"}, status_code=400)
 
     return StreamingResponse(
-        openai_stream_generator(user_prompt, session_id),
+        _stream_chat_events(request, user_prompt, session_id),
         media_type="text/event-stream",
     )
 
