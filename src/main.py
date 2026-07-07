@@ -1031,7 +1031,10 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     model=OLLAMA_MODEL,
                     messages=messages,
                     stream=True,
-                    temperature=0.2,
+                    temperature=1.0,          
+                    frequency_penalty=0.0,    
+                    presence_penalty=0.0
+                    # temperature=0.2,
                 )
 
                 for chunk in stream:
