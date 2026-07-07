@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 # =========================================================
 # 環境設定
 # =========================================================
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL")
 COMPANY_PROXY = os.getenv("COMPANY_PROXY")
@@ -798,21 +798,32 @@ def openai_stream_generator(user_prompt: str, session_id: str):
         nonlocal chat_logged
         if chat_logged:
             return
-        try:
-            log_chat_turn(
-                fetched_at=fetched_at,
-                user_input=user_prompt,
-                thinking=assistant_thinking if thinking is None else thinking,
-                answer=answer,
-                prompt_to_llm=prompt_text_logged if prompt_to_llm is None else prompt_to_llm,
-                handling_time=format_handling_time(elapsed_ms()),
-                model_used=model_used or OLLAMA_MODEL or "unknown",
-            )
-            chat_logged = True
-        except Exception as log_err:
-            import traceback
-            _safe_print(f"chat log write failed: {log_err}")
-            _safe_print(traceback.format_exc())
+        chat_logged = True
+        handling_time = format_handling_time(elapsed_ms())
+        thinking_val = assistant_thinking if thinking is None else thinking
+        prompt_val = prompt_text_logged if prompt_to_llm is None else prompt_to_llm
+        model_val = model_used or OLLAMA_MODEL or "unknown"
+
+        def _write_log_row() -> None:
+            try:
+                # Brief delay so the SSE "done" event reaches the browser before
+                # CSV creation (which can trigger Live Server reload on Windows).
+                time.sleep(0.4)
+                log_chat_turn(
+                    fetched_at=fetched_at,
+                    user_input=user_prompt,
+                    thinking=thinking_val,
+                    answer=answer,
+                    prompt_to_llm=prompt_val,
+                    handling_time=handling_time,
+                    model_used=model_val,
+                )
+            except Exception as log_err:
+                import traceback
+                _safe_print(f"chat log write failed: {log_err}")
+                _safe_print(traceback.format_exc())
+
+        threading.Thread(target=_write_log_row, daemon=True).start()
 
     try:
         history = trim_history(sessions.get(session_id, []))
@@ -911,12 +922,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
-                schedule_chat_log(
-                    answer_text,
-                    thinking="",
-                    prompt_to_llm=prompt_text,
-                    model_used="backend",
-                )
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -926,6 +931,12 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "answered_by": "backend",
                     "report_mode": False,
                 })
+                schedule_chat_log(
+                    answer_text,
+                    thinking="",
+                    prompt_to_llm=prompt_text,
+                    model_used="backend",
+                )
                 return
 
             # ---- detail + 報告：LLM 砌 HTML，前端 download ----
@@ -1045,7 +1056,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 history.append({"role": "assistant", "content": short_assistant})
                 sessions[session_id] = trim_history(history, max_turns=4)
 
-                schedule_chat_log(assistant_answer)
                 finalized_report_html = finalize_report_html(assistant_answer, compact_rows)
                 yield sse_event({
                     "type": "done",
@@ -1058,6 +1068,7 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "filename": "tree_cases_report.html",
                     "report_html": finalized_report_html,
                 })
+                schedule_chat_log(assistant_answer)
                 return
 
             # ---- 其他 DB 類（detail 但無報告 / generic）→ 普通 Q&A，用 LLM ----
@@ -1162,7 +1173,6 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
         sessions[session_id] = trim_history(history, max_turns=4)
 
-        schedule_chat_log(assistant_answer)
         yield sse_event({
             "type": "done",
             "is_db_query": is_db_query,
@@ -1172,12 +1182,16 @@ def openai_stream_generator(user_prompt: str, session_id: str):
             "answered_by": "llm",
             "report_mode": False,
         })
+        schedule_chat_log(assistant_answer)
 
     except Exception as e:
         if _is_client_disconnect(e):
             return
-        schedule_chat_log(assistant_answer or f"[ERROR] {e}")
         yield sse_event({"type": "error", "error": str(e)})
+        schedule_chat_log(assistant_answer or f"[ERROR] {e}")
+    finally:
+        if not chat_logged:
+            schedule_chat_log(assistant_answer or "[INCOMPLETE]")
 
 
 async def _stream_chat_events(request: Request, user_prompt: str, session_id: str):
@@ -1185,17 +1199,18 @@ async def _stream_chat_events(request: Request, user_prompt: str, session_id: st
     try:
         for chunk in gen:
             if await request.is_disconnected():
-                return
+                break
             try:
                 yield chunk
             except (BrokenPipeError, ConnectionResetError, OSError) as exc:
                 if _is_client_disconnect(exc):
-                    return
+                    break
                 raise
     except (BrokenPipeError, ConnectionResetError, OSError) as exc:
         if _is_client_disconnect(exc):
-            return
-        raise
+            pass
+        else:
+            raise
     finally:
         gen.close()
 

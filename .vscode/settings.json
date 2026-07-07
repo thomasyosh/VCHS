@@ -3,8 +3,11 @@
     "liveServer.settings.ignoreFiles": [
         ".vscode/**",
         "**/logs/**",
-        "**/.git/**",
-        "**/.venv/**",
-        "**/*.csv"
+        "**/*.csv",
+        "**/__pycache__/**",
+        "**/*.pyc",
+        "src/**",
+        ".git/**",
+        ".venv/**"
     ]
 }
