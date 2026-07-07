@@ -763,7 +763,12 @@ def log_chat_turn(
         CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
         write_header = _csv_needs_header(csv_path)
         with csv_path.open("a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
+            writer = csv.writer(
+                f,
+                delimiter=",",
+                quoting=csv.QUOTE_ALL,
+                lineterminator="\n",
+            )
             if write_header:
                 writer.writerow(CHAT_LOG_COLUMNS)
             writer.writerow(row)
