@@ -101,6 +101,13 @@ DB_KEYWORDS = [
     "tc20", "tc19", "tc21",
 ]
 
+# 報告 / 地圖意圖關鍵字（由用戶訊息抽取，決定報告 HTML 要包含咩區塊）
+REPORT_INTENT_KEYWORDS = ["報告", "report"]
+MAP_INTENT_KEYWORDS = [
+    "地圖", "地图", "map", "位置", "座標", "坐标",
+    "經緯", "经纬", "leaflet", "地圖視圖", "地图视图", "地圖檢視",
+]
+
 # 防止 context 爆炸：最多傳幾多筆詳細記錄俾 LLM
 MAX_RECORDS_FOR_DETAIL = 100
 # assistant 回覆寫回 history 時，最多保留幾多字元
@@ -145,7 +152,34 @@ REPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 ],
             },
         ],
-    }
+    },
+    "default_with_map": {
+        "id": "default_with_map",
+        "description": "與 default 相同，但用戶要求地圖；地圖區塊由後端 Leaflet 注入，LLM 毋須生成地圖。",
+        "sections": [
+            {
+                "id": "kpi",
+                "title": "關鍵指標",
+                "requirements": [
+                    "顯示最少 3 個 KPI：例如案件總數、涉及地區數量、承辦商數量、樹木總數。",
+                ],
+            },
+            {
+                "id": "summary",
+                "title": "分類及統計摘要",
+                "requirements": [
+                    "最少做一個按地區分佈、一個按承辦商分佈嘅摘要。",
+                ],
+            },
+            {
+                "id": "details",
+                "title": "詳細個案列表",
+                "requirements": [
+                    "用 <table> 顯示每一宗個案（案件編號、日期、地區、街道、投訴類型、樹木種類、樹木數量、嚴重程度、承辦商、狀態）。",
+                ],
+            },
+        ],
+    },
 }
 
 # =========================================================
@@ -212,14 +246,47 @@ def classify_query_type(user_prompt: str) -> str:
     return "generic_db"
 
 
-def select_report_template(user_prompt: str) -> str:
+def _match_intent_keywords(text: str, keywords: List[str]) -> List[str]:
+    """Return which intent keywords appear in the user message (case-insensitive for ASCII)."""
+    if not text:
+        return []
+    t_lower = text.lower()
+    matched: List[str] = []
+    for kw in keywords:
+        if kw.isascii():
+            if kw.lower() in t_lower:
+                matched.append(kw)
+        elif kw in text:
+            matched.append(kw)
+    return list(dict.fromkeys(matched))
+
+
+def extract_chat_intents(user_prompt: str) -> Dict[str, Any]:
+    """
+    Extract feature flags from the user's chat message.
+    Used at the report branch (detail + 報告) to decide HTML sections (e.g. Leaflet map).
+    """
+    text = user_prompt.strip()
+    report_hits = _match_intent_keywords(text, REPORT_INTENT_KEYWORDS)
+    map_hits = _match_intent_keywords(text, MAP_INTENT_KEYWORDS)
+    want_report = bool(report_hits)
+    want_map = bool(map_hits)
+    return {
+        "want_report": want_report,
+        "want_map": want_map,
+        "report_keywords": report_hits,
+        "map_keywords": map_hits,
+    }
+
+
+def select_report_template(user_prompt: str, intents: Optional[Dict[str, Any]] = None) -> str:
     """
     根據 prompt 揀報告 template：
       - 而家只有 default，將來可加其他 layout，再用關鍵字判斷。
     """
-    t = user_prompt.lower()
-    # example 將來:
-    # if "layout1" in t: return "layout1"
+    intents = intents or extract_chat_intents(user_prompt)
+    if intents.get("want_map"):
+        return "default_with_map"
     return "default"
 
 
@@ -317,6 +384,117 @@ def finalize_report_html(html_text: str, rows: List[Dict[str, str]]) -> str:
         finalized = CASE_PLACEHOLDER_RE.sub("", finalized)
 
     return finalized
+
+
+def _parse_case_coordinates(case: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """Read latitude/longitude from a case row (supports common Supabase column names)."""
+    lat_raw = case.get("latitude", case.get("lat"))
+    lng_raw = case.get("longitude", case.get("lng", case.get("lon")))
+    try:
+        lat = float(lat_raw) if lat_raw is not None and str(lat_raw).strip() != "" else None
+        lng = float(lng_raw) if lng_raw is not None and str(lng_raw).strip() != "" else None
+    except (TypeError, ValueError):
+        return None, None
+    if lat is None or lng is None:
+        return None, None
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return None, None
+    return lat, lng
+
+
+def build_compact_case_row(r: Dict[str, Any]) -> Dict[str, str]:
+    """Normalize one tree_cases row for report JSON / map / table expansion."""
+    lat, lng = _parse_case_coordinates(r)
+    row = {
+        "case_no": safe_str(r.get("case_no")),
+        "case_date": safe_str(r.get("case_date")),
+        "district": safe_str(r.get("district")),
+        "street": safe_str(r.get("street")),
+        "complaint_type": safe_str(r.get("complaint_type")),
+        "tree_species": safe_str(r.get("tree_species")),
+        "tree_count": safe_str(r.get("tree_count")),
+        "severity": safe_str(r.get("severity")),
+        "contractor": safe_str(r.get("contractor")),
+        "status": safe_str(r.get("status")),
+    }
+    if lat is not None and lng is not None:
+        row["latitude"] = str(lat)
+        row["longitude"] = str(lng)
+    return row
+
+
+def build_map_markers(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+    markers: List[Dict[str, Any]] = []
+    for case in rows:
+        lat, lng = _parse_case_coordinates(case)
+        if lat is None or lng is None:
+            continue
+        markers.append({
+            "lat": lat,
+            "lng": lng,
+            "case_no": case.get("case_no", ""),
+            "street": case.get("street", ""),
+            "district": case.get("district", ""),
+            "severity": case.get("severity", ""),
+            "status": case.get("status", ""),
+        })
+    return markers
+
+
+def inject_leaflet_map(html_text: str, rows: List[Dict[str, str]]) -> str:
+    """
+    Append a Leaflet map section before </body>.
+    Map is server-built so Ollama does not need to generate map JavaScript.
+    """
+    markers = build_map_markers(rows)
+    if not markers:
+        note = (
+            '<section id="cases-map-section" class="report-map-section">'
+            "<h2>個案位置地圖</h2>"
+            "<p>沒有具備有效經緯度座標的個案，無法顯示地圖。</p>"
+            "</section>"
+        )
+    else:
+        markers_json = json.dumps(markers, ensure_ascii=False)
+        markers_json_safe = markers_json.replace("</", "<\\/")
+        note = (
+            '<section id="cases-map-section" class="report-map-section">'
+            "<h2>個案位置地圖</h2>"
+            f"<p>共 {len(markers)} 個可定位個案</p>"
+            '<div id="cases-map" style="height:480px;width:100%;"></div>'
+            '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" '
+            'integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />'
+            '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" '
+            'integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>'
+            f"<script>window.__CASE_MAP_MARKERS__ = {markers_json_safe};</script>"
+            "<script>"
+            "(function(){"
+            "  var el = document.getElementById('cases-map');"
+            "  if (!el || !window.L || !window.__CASE_MAP_MARKERS__) return;"
+            "  var markers = window.__CASE_MAP_MARKERS__;"
+            "  var map = L.map('cases-map');"
+            "  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {"
+            "    maxZoom: 19, attribution: '&copy; OpenStreetMap'"
+            "  }).addTo(map);"
+            "  var bounds = [];"
+            "  markers.forEach(function(m){"
+            "    var popup = '<b>' + m.case_no + '</b><br>' + m.street + '<br>' + m.district"
+            "      + '<br>嚴重程度: ' + m.severity + '<br>狀態: ' + m.status;"
+            "    var mk = L.marker([m.lat, m.lng]).addTo(map).bindPopup(popup);"
+            "    bounds.push(mk.getLatLng());"
+            "  });"
+            "  if (bounds.length) { map.fitBounds(bounds, {padding: [24, 24]}); }"
+            "  else { map.setView([22.3193, 114.1694], 11); }"
+            "})();"
+            "</script>"
+            "</section>"
+        )
+
+    lower = html_text.lower()
+    body_end = lower.rfind("</body>")
+    if body_end == -1:
+        return html_text + note
+    return html_text[:body_end] + note + html_text[body_end:]
 
 
 def extract_districts(text: str) -> List[str]:
@@ -945,25 +1123,15 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 return
 
             # ---- detail + 報告：LLM 砌 HTML，前端 download ----
-            want_report = ("報告" in user_prompt) or ("report" in user_prompt.lower())
+            intents = extract_chat_intents(user_prompt)
+            want_report = intents["want_report"]
+            want_map = intents["want_map"]
             if query_type == "detail" and want_report:
-                template_id = select_report_template(user_prompt)
+                template_id = select_report_template(user_prompt, intents)
                 template_def = REPORT_TEMPLATES.get(template_id, REPORT_TEMPLATES["default"])
 
-                compact_rows = []
-                for r in matched:
-                    compact_rows.append({
-                        "case_no": safe_str(r.get("case_no")),
-                        "case_date": safe_str(r.get("case_date")),
-                        "district": safe_str(r.get("district")),
-                        "street": safe_str(r.get("street")),
-                        "complaint_type": safe_str(r.get("complaint_type")),
-                        "tree_species": safe_str(r.get("tree_species")),
-                        "tree_count": safe_str(r.get("tree_count")),
-                        "severity": safe_str(r.get("severity")),
-                        "contractor": safe_str(r.get("contractor")),
-                        "status": safe_str(r.get("status")),
-                    })
+                compact_rows = [build_compact_case_row(r) for r in matched]
+                map_marker_count = len(build_map_markers(compact_rows))
 
                 data_json = json.dumps(compact_rows, ensure_ascii=False)
 
@@ -978,6 +1146,12 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     template_system += f"- 區塊 {sec['id']}（{sec['title']}）:\n"
                     for req in sec["requirements"]:
                         template_system += f"  - {req}\n"
+
+                if want_map:
+                    template_system += (
+                        "\n用戶要求包含地圖視圖；**地圖由後端另行注入**，你毋須生成 Leaflet / 地圖 HTML，"
+                        "專注於 KPI、統計摘要同詳細列表即可。\n"
+                    )
 
                 template_system += (
                     "\n整體 HTML 要包含 <head>（含 <meta charset=\"utf-8\"> 和 <title>）以及 <body>。\n"
@@ -1027,6 +1201,9 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "query_type": query_type,
                     "rows_loaded": rows_loaded,
                     "filters": filters_debug,
+                    "intents": intents,
+                    "want_map": want_map,
+                    "map_marker_count": map_marker_count,
                     "report_template": template_id,
                     "answered_by": "llm-html-report",
                     "report_mode": True,
@@ -1065,6 +1242,10 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                 sessions[session_id] = trim_history(history, max_turns=4)
 
                 finalized_report_html = finalize_report_html(assistant_answer, compact_rows)
+                if want_map:
+                    finalized_report_html = inject_leaflet_map(
+                        finalized_report_html, compact_rows
+                    )
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -1073,6 +1254,8 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "answer_chars": len(assistant_answer),
                     "answered_by": "llm-html-report",
                     "report_mode": True,
+                    "want_map": want_map,
+                    "map_marker_count": map_marker_count,
                     "filename": "tree_cases_report.html",
                     "report_html": finalized_report_html,
                 })
