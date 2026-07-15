@@ -121,6 +121,18 @@ REPORT_DISCLAIMER = (
     "僅供內部參考，並不構成任何專業意見或法律責任承諾。"
 )
 
+MAP_INJECT_PLACEHOLDER = "<!-- LEAFLET_MAP_INJECT -->"
+MAP_SECTION_ID = "cases-map-section"
+MAP_CONTAINER_ID = "cases-map"
+LEAFLET_CSS = (
+    '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" '
+    'integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />'
+)
+LEAFLET_JS = (
+    '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" '
+    'integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>'
+)
+
 REPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     "default": {
         "id": "default",
@@ -169,6 +181,19 @@ REPORT_TEMPLATES: Dict[str, Dict[str, Any]] = {
                 "title": "分類及統計摘要",
                 "requirements": [
                     "最少做一個按地區分佈、一個按承辦商分佈嘅摘要。",
+                ],
+            },
+            {
+                "id": "map",
+                "title": "個案位置地圖",
+                "requirements": [
+                    "在「分類及統計摘要」之後、「詳細個案列表」之前，"
+                    f"**原樣輸出**以下區塊（不可改 id，不可刪除註解 placeholder）：\n"
+                    f'  <section id="{MAP_SECTION_ID}" class="report-map-section">\n'
+                    "    <h2>個案位置地圖</h2>\n"
+                    f"    {MAP_INJECT_PLACEHOLDER}\n"
+                    "  </section>",
+                    "地圖本體由後端 Leaflet 注入；你毋須寫 Leaflet / map script。",
                 ],
             },
             {
@@ -441,60 +466,125 @@ def build_map_markers(rows: List[Dict[str, str]]) -> List[Dict[str, Any]]:
     return markers
 
 
-def inject_leaflet_map(html_text: str, rows: List[Dict[str, str]]) -> str:
-    """
-    Append a Leaflet map section before </body>.
-    Map is server-built so Ollama does not need to generate map JavaScript.
-    """
-    markers = build_map_markers(rows)
+def _build_leaflet_init_script(markers_json_safe: str) -> str:
+    return (
+        f"<script>window.__CASE_MAP_MARKERS__ = {markers_json_safe};</script>"
+        "<script>"
+        "(function(){"
+        f"  var el = document.getElementById('{MAP_CONTAINER_ID}');"
+        "  if (!el || !window.L || !window.__CASE_MAP_MARKERS__) return;"
+        "  var markers = window.__CASE_MAP_MARKERS__;"
+        f"  var map = L.map('{MAP_CONTAINER_ID}');"
+        "  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {"
+        "    maxZoom: 19, attribution: '&copy; OpenStreetMap'"
+        "  }).addTo(map);"
+        "  var bounds = [];"
+        "  markers.forEach(function(m){"
+        "    var popup = '<b>' + m.case_no + '</b><br>' + m.street + '<br>' + m.district"
+        "      + '<br>嚴重程度: ' + m.severity + '<br>狀態: ' + m.status;"
+        "    var mk = L.marker([m.lat, m.lng]).addTo(map).bindPopup(popup);"
+        "    bounds.push(mk.getLatLng());"
+        "  });"
+        "  if (bounds.length) { map.fitBounds(bounds, {padding: [24, 24]}); }"
+        "  else { map.setView([22.3193, 114.1694], 11); }"
+        "})();"
+        "</script>"
+    )
+
+
+def _build_map_widget_html(markers: List[Dict[str, Any]]) -> str:
+    """HTML injected into the reserved map section (not a full report section wrapper)."""
     if not markers:
-        note = (
-            '<section id="cases-map-section" class="report-map-section">'
-            "<h2>個案位置地圖</h2>"
-            "<p>沒有具備有效經緯度座標的個案，無法顯示地圖。</p>"
-            "</section>"
-        )
-    else:
-        markers_json = json.dumps(markers, ensure_ascii=False)
-        markers_json_safe = markers_json.replace("</", "<\\/")
-        note = (
-            '<section id="cases-map-section" class="report-map-section">'
-            "<h2>個案位置地圖</h2>"
-            f"<p>共 {len(markers)} 個可定位個案</p>"
-            '<div id="cases-map" style="height:480px;width:100%;"></div>'
-            '<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" '
-            'integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />'
-            '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" '
-            'integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>'
-            f"<script>window.__CASE_MAP_MARKERS__ = {markers_json_safe};</script>"
-            "<script>"
-            "(function(){"
-            "  var el = document.getElementById('cases-map');"
-            "  if (!el || !window.L || !window.__CASE_MAP_MARKERS__) return;"
-            "  var markers = window.__CASE_MAP_MARKERS__;"
-            "  var map = L.map('cases-map');"
-            "  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {"
-            "    maxZoom: 19, attribution: '&copy; OpenStreetMap'"
-            "  }).addTo(map);"
-            "  var bounds = [];"
-            "  markers.forEach(function(m){"
-            "    var popup = '<b>' + m.case_no + '</b><br>' + m.street + '<br>' + m.district"
-            "      + '<br>嚴重程度: ' + m.severity + '<br>狀態: ' + m.status;"
-            "    var mk = L.marker([m.lat, m.lng]).addTo(map).bindPopup(popup);"
-            "    bounds.push(mk.getLatLng());"
-            "  });"
-            "  if (bounds.length) { map.fitBounds(bounds, {padding: [24, 24]}); }"
-            "  else { map.setView([22.3193, 114.1694], 11); }"
-            "})();"
-            "</script>"
-            "</section>"
+        return '<p class="map-empty">沒有具備有效經緯度座標的個案，無法顯示地圖。</p>'
+    markers_json_safe = json.dumps(markers, ensure_ascii=False).replace("</", "<\\/")
+    return (
+        f'<p class="map-count">共 {len(markers)} 個可定位個案</p>'
+        f'<div id="{MAP_CONTAINER_ID}" class="cases-map-canvas" '
+        'style="height:480px;width:100%;min-height:320px;"></div>'
+        + _build_leaflet_init_script(markers_json_safe)
+    )
+
+
+def _inject_leaflet_assets_in_head(html_text: str) -> str:
+    if "leaflet.css" in html_text:
+        return html_text
+    head_end = html_text.lower().rfind("</head>")
+    if head_end == -1:
+        return LEAFLET_CSS + LEAFLET_JS + html_text
+    assets = LEAFLET_CSS + LEAFLET_JS
+    return html_text[:head_end] + assets + html_text[head_end:]
+
+
+def _build_map_section_shell(widget_html: str = MAP_INJECT_PLACEHOLDER) -> str:
+    return (
+        f'<section id="{MAP_SECTION_ID}" class="report-map-section">'
+        "<h2>個案位置地圖</h2>"
+        f"{widget_html}"
+        "</section>"
+    )
+
+
+def _place_map_widget(html_text: str, widget_html: str) -> str:
+    if MAP_INJECT_PLACEHOLDER in html_text:
+        return html_text.replace(MAP_INJECT_PLACEHOLDER, widget_html, 1)
+
+    section_re = re.compile(
+        rf"<section[^>]*\bid=[\"']{MAP_SECTION_ID}[\"'][^>]*>.*?</section>",
+        re.DOTALL | re.IGNORECASE,
+    )
+    section_match = section_re.search(html_text)
+    if section_match:
+        return (
+            html_text[: section_match.start()]
+            + _build_map_section_shell(widget_html)
+            + html_text[section_match.end() :]
         )
 
-    lower = html_text.lower()
-    body_end = lower.rfind("</body>")
-    if body_end == -1:
-        return html_text + note
-    return html_text[:body_end] + note + html_text[body_end:]
+    container_re = re.compile(
+        rf"<div[^>]*\bid=[\"']{MAP_CONTAINER_ID}[\"'][^>]*>\s*</div>",
+        re.IGNORECASE,
+    )
+    container_match = container_re.search(html_text)
+    if container_match:
+        return (
+            html_text[: container_match.start()]
+            + widget_html
+            + html_text[container_match.end() :]
+        )
+
+    for pattern in (
+        r"<section[^>]*\bid=[\"']details[\"'][^>]*>",
+        r"<h2[^>]*>\s*詳細個案",
+        r"<h2[^>]*>\s*詳細",
+        r"<footer\b",
+    ):
+        match = re.search(pattern, html_text, re.IGNORECASE)
+        if match:
+            return (
+                html_text[: match.start()]
+                + _build_map_section_shell(widget_html)
+                + html_text[match.start() :]
+            )
+
+    body_end = html_text.lower().rfind("</body>")
+    if body_end != -1:
+        return (
+            html_text[:body_end]
+            + _build_map_section_shell(widget_html)
+            + html_text[body_end:]
+        )
+    return html_text + _build_map_section_shell(widget_html)
+
+
+def inject_leaflet_map(html_text: str, rows: List[Dict[str, str]]) -> str:
+    """
+    Inject Leaflet into the report's reserved map section (between summary and details).
+    Falls back to before details/footer only if the LLM omitted the placeholder.
+    """
+    markers = build_map_markers(rows)
+    widget_html = _build_map_widget_html(markers)
+    html_text = _inject_leaflet_assets_in_head(html_text)
+    return _place_map_widget(html_text, widget_html)
 
 
 def extract_districts(text: str) -> List[str]:
@@ -1149,24 +1239,34 @@ def openai_stream_generator(user_prompt: str, session_id: str):
 
                 if want_map:
                     template_system += (
-                        "\n用戶要求包含地圖視圖；**地圖由後端另行注入**，你毋須生成 Leaflet / 地圖 HTML，"
-                        "專注於 KPI、統計摘要同詳細列表即可。\n"
+                        "\n用戶要求包含地圖視圖；**地圖由後端 Leaflet 注入**。\n"
+                        "你必須在「分類及統計摘要」之後、「詳細個案列表」之前，"
+                        f"原樣保留 `<section id=\"{MAP_SECTION_ID}\">` 區塊，"
+                        f"並在區塊內包含 `{MAP_INJECT_PLACEHOLDER}` 註解（不可刪除）。\n"
+                        "毋須撰寫 Leaflet / map script，專注於 KPI、統計摘要同詳細列表。\n"
+                        "區塊順序必須為：KPI → 統計摘要 → 個案位置地圖（placeholder）→ 詳細列表 → footer。\n"
                     )
 
+                layout_blocks = (
+                    "但必須清楚分出四個主要區塊：KPI、分類/統計摘要、個案位置地圖、詳細列表。\n"
+                    if want_map
+                    else "但必須清楚分出三個主要區塊：KPI、分類/統計摘要、詳細列表。\n"
+                )
                 template_system += (
                     "\n整體 HTML 要包含 <head>（含 <meta charset=\"utf-8\"> 和 <title>）以及 <body>。\n"
-                    "你可以自由設計 class 名稱、布局和樣式，但必須清楚分出三個主要區塊：KPI、分類/統計摘要、詳細列表。\n"
-                    "你可以選擇：\n"
-                    "- 直接在 HTML 入面引用 Chart.js CDN 並產生 <canvas> + <script> 初始化圖表，"
-                    "數據要來自系統提供的 JSON；或者\n"
-                    "- 只產生結構化 HTML（例如 <div data-chart=\"district\">）留俾前端再渲染。\n\n"
-                    "所有 KPI 及圖表用到的數值（例如案件總數、樹木總數、各地區／承辦商案件數）"
-                    "必須直接使用系統提供的統計結果或 JSON 資料，不可以自行估算或修改，"
-                    "亦不得寫出「估計」「約」「可能」之類字眼。\n"
-                    "不要評論「案件總數」與 JSON 記錄數目是否一致，只需如實顯示統計數值。\n\n"
-                    "在報告的最底部，**必須** 包含一個 <footer> 區塊，其內文必須完整逐字包含以下免責聲明（不可增刪或改字）：\n"
-                    f"「{REPORT_DISCLAIMER}」\n"
-                    "你可以在 footer 內加其他資訊，但不得修改上述免責聲明文字。\n"
+                    + "你可以自由設計 class 名稱、布局和樣式，"
+                    + layout_blocks
+                    + "你可以選擇：\n"
+                    + "- 直接在 HTML 入面引用 Chart.js CDN 並產生 <canvas> + <script> 初始化圖表，"
+                    + "數據要來自系統提供的 JSON；或者\n"
+                    + "- 只產生結構化 HTML（例如 <div data-chart=\"district\">）留俾前端再渲染。\n\n"
+                    + "所有 KPI 及圖表用到的數值（例如案件總數、樹木總數、各地區／承辦商案件數）"
+                    + "必須直接使用系統提供的統計結果或 JSON 資料，不可以自行估算或修改，"
+                    + "亦不得寫出「估計」「約」「可能」之類字眼。\n"
+                    + "不要評論「案件總數」與 JSON 記錄數目是否一致，只需如實顯示統計數值。\n\n"
+                    + "在報告的最底部，**必須** 包含一個 <footer> 區塊，其內文必須完整逐字包含以下免責聲明（不可增刪或改字）：\n"
+                    + f"「{REPORT_DISCLAIMER}」\n"
+                    + "你可以在 footer 內加其他資訊，但不得修改上述免責聲明文字。\n"
                 )
 
                 stats_system = (

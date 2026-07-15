@@ -5,3 +5,6 @@ certifi
 python-dotenv
 fastapi
 uvicorn
+psycopg2
+requests
+pandas
