@@ -8,3 +8,4 @@ uvicorn
 psycopg2
 requests
 pandas
+python-docx

@@ -454,6 +454,26 @@
       return text.slice(start, end + "</html>".length).trim();
     }
 
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    function base64ToBlob(base64, mimeType) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new Blob([bytes], { type: mimeType });
+    }
+
     async function sendMessage() {
       if (isStreaming) return;
 
@@ -526,7 +546,7 @@
                 currentIsReport = true;
                 setStatusTag("報告模式", true);
                 answerFooterEl.textContent =
-                  "提示：系統正以報告模式產生 HTML，完成後會自動下載報告檔案。";
+                  "提示：系統正以報告模式產生 HTML + DOCX（表格），完成後會自動下載。";
               }
             } else if (type === "thinking") {
               appendText(thinkingEl, data.text || "");
@@ -557,24 +577,31 @@
                 }
 
                 const cleanedHtml = extractHtmlFromText(data.report_html || currentReportHtml);
+                const downloaded = [];
 
                 try {
-                  const blob = new Blob(
-                    [cleanedHtml],
-                    { type: "text/html;charset=utf-8" }
+                  downloadBlob(
+                    new Blob([cleanedHtml], { type: "text/html;charset=utf-8" }),
+                    reportFilename
                   );
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = reportFilename;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
+                  downloaded.push(reportFilename);
+
+                  if (data.report_docx_base64) {
+                    const docxName = data.docx_filename || "tree_cases_table.docx";
+                    downloadBlob(
+                      base64ToBlob(
+                        data.report_docx_base64,
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                      ),
+                      docxName
+                    );
+                    downloaded.push(docxName);
+                  }
 
                   setStatusTag("已下載報告", true);
                   answerFooterEl.textContent =
-                    `已自動下載報告檔案：「${reportFilename}」，如未自動下載可向 IT 同事查詢瀏覽器設定。`;
+                    `已自動下載：${downloaded.join("、")}。` +
+                    "DOCX 只包含個案詳細表格（不含地圖／圖表）。";
                 } catch (e) {
                   console.error("download report failed", e);
                   answerFooterEl.textContent =

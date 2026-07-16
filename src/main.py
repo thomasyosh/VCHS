@@ -1,5 +1,7 @@
+import base64
 import csv
 import html
+import io
 import os
 import json
 import re
@@ -11,6 +13,10 @@ from pathlib import Path
 from typing import Dict, List, Any, Tuple, Optional
 
 import httpx
+from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.shared import Cm, Pt
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -358,6 +364,67 @@ def build_cases_details_table(rows: List[Dict[str, str]]) -> str:
         f"<tbody>{''.join(body_rows)}</tbody>"
         "</table>"
     )
+
+
+def build_cases_table_docx_base64(rows: List[Dict[str, str]]) -> str:
+    """
+    Build a DOCX that contains only the case details table (no KPI / chart / map).
+    Returns base64 so the frontend can download it from the SSE done event.
+    """
+    doc = Document()
+
+    section = doc.sections[0]
+    section.left_margin = Cm(1.5)
+    section.right_margin = Cm(1.5)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run("樹木個案詳細列表")
+    run.bold = True
+    run.font.size = Pt(16)
+    run.font.name = "Microsoft JhengHei"
+    run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft JhengHei")
+
+    meta = doc.add_paragraph()
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    meta_run = meta.add_run(
+        f"共 {len(rows)} 宗個案　產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
+    meta_run.font.size = Pt(10)
+    meta_run.font.name = "Microsoft JhengHei"
+    meta_run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft JhengHei")
+
+    col_count = len(REPORT_CASE_FIELDS)
+    table = doc.add_table(rows=1 + len(rows), cols=col_count)
+    table.style = "Table Grid"
+
+    header_row = table.rows[0]
+    for idx, (_, label) in enumerate(REPORT_CASE_FIELDS):
+        cell = header_row.cells[idx]
+        cell.text = label
+        for paragraph in cell.paragraphs:
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for cell_run in paragraph.runs:
+                cell_run.bold = True
+                cell_run.font.size = Pt(9)
+                cell_run.font.name = "Microsoft JhengHei"
+                cell_run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft JhengHei")
+
+    for row_idx, case in enumerate(rows, start=1):
+        for col_idx, (key, _) in enumerate(REPORT_CASE_FIELDS):
+            cell = table.rows[row_idx].cells[col_idx]
+            cell.text = safe_str(case.get(key))
+            for paragraph in cell.paragraphs:
+                for cell_run in paragraph.runs:
+                    cell_run.font.size = Pt(8)
+                    cell_run.font.name = "Microsoft JhengHei"
+                    cell_run._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft JhengHei")
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def finalize_report_html(html_text: str, rows: List[Dict[str, str]]) -> str:
@@ -1348,6 +1415,13 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     finalized_report_html = inject_leaflet_map(
                         finalized_report_html, compact_rows
                     )
+
+                report_docx_b64 = ""
+                try:
+                    report_docx_b64 = build_cases_table_docx_base64(compact_rows)
+                except Exception as docx_err:
+                    _safe_print(f"docx report build failed: {docx_err}")
+
                 yield sse_event({
                     "type": "done",
                     "is_db_query": True,
@@ -1360,6 +1434,8 @@ def openai_stream_generator(user_prompt: str, session_id: str):
                     "map_marker_count": map_marker_count,
                     "filename": "tree_cases_report.html",
                     "report_html": finalized_report_html,
+                    "docx_filename": "tree_cases_table.docx",
+                    "report_docx_base64": report_docx_b64,
                 })
                 schedule_chat_log(assistant_answer)
                 return
