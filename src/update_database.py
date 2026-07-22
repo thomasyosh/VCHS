@@ -43,8 +43,8 @@ def generate_full_csv_with_json_spread():
     # streets_to_fetch = df[missing_coords_mask]['street'].dropna().unique()
     streets_to_fetch = df['street'].dropna().unique()
     
-    # This dictionary will now store a LIST of coordinates for each street
-    # e.g. {"Nathan Road": [{"lat": 22.1, "lng": 114.1}, {"lat": 22.2, "lng": 114.2}]}
+    # This dictionary stores API HK Grid (x, y) plus converted WGS84 (lat, lng) per street
+    # e.g. {"Nathan Road": [{"x": 835000, "y": 820000, "lat": 22.1, "lng": 114.1}, ...]}
     coordinate_mapping = {}
     headers = {"User-Agent": "Mozilla/5.0"}
 
@@ -65,7 +65,7 @@ def generate_full_csv_with_json_spread():
                     easting = map_resp[i].get('x')
                     northing = map_resp[i].get('y')
                     
-                    if easting and northing:
+                    if easting is not None and northing is not None:
                         geo_url = f"https://www.geodetic.gov.hk/transform/v2/?inSys=hkgrid&e={easting}&n={northing}"
                         geo_resp = requests.get(geo_url, headers=headers).json()
                         
@@ -73,7 +73,12 @@ def generate_full_csv_with_json_spread():
                         lng = geo_resp.get('wgsLong')
                         
                         if lat and lng:
-                            api_points.append({"lat": lat, "lng": lng})
+                            api_points.append({
+                                "x": easting,      # HK 1980 Grid easting (from map.gov.hk)
+                                "y": northing,     # HK 1980 Grid northing (from map.gov.hk)
+                                "lat": lat,
+                                "lng": lng,
+                            })
                 
                 if api_points:
                     coordinate_mapping[street] = api_points
@@ -90,6 +95,8 @@ def generate_full_csv_with_json_spread():
     
     # A very tiny jitter (roughly 5 meters) just to separate duplicates that land on the exact same API point
     MICRO_JITTER = 0.00005 
+    # Roughly equivalent ~5m jitter on HK Grid metres (so stacked cases stay separable in x/y too)
+    MICRO_JITTER_XY = 5.0
     
     for street, api_points in coordinate_mapping.items():
         # Get the indices of all rows belonging to this street
@@ -100,6 +107,8 @@ def generate_full_csv_with_json_spread():
         
         lats = []
         lngs = []
+        xs = []
+        ys = []
         
         for i in range(num_cases):
             # Round-Robin: Cycle through the available API points
@@ -109,18 +118,36 @@ def generate_full_csv_with_json_spread():
             if num_cases > 1:
                 jitter_lat = np.random.uniform(-MICRO_JITTER, MICRO_JITTER)
                 jitter_lng = np.random.uniform(-MICRO_JITTER, MICRO_JITTER)
+                jitter_x = np.random.uniform(-MICRO_JITTER_XY, MICRO_JITTER_XY)
+                jitter_y = np.random.uniform(-MICRO_JITTER_XY, MICRO_JITTER_XY)
             else:
                 jitter_lat = 0
                 jitter_lng = 0
+                jitter_x = 0
+                jitter_y = 0
                 
             lats.append(base_pt["lat"] + jitter_lat)
             lngs.append(base_pt["lng"] + jitter_lng)
+            xs.append(float(base_pt["x"]) + jitter_x)
+            ys.append(float(base_pt["y"]) + jitter_y)
             
         # Update the dataframe in one go for this street
         df.loc[indices, 'latitude'] = lats
         df.loc[indices, 'longitude'] = lngs
+        df.loc[indices, 'x'] = xs
+        df.loc[indices, 'y'] = ys
 
     # --- 6. Sort by ID and Export ---
+    # Ensure geo columns exist even if some streets failed geocoding
+    for col in ("latitude", "longitude", "x", "y"):
+        if col not in df.columns:
+            df[col] = np.nan
+
+    # Keep geo fields together near the end for easier Supabase import review
+    preferred_tail = ["latitude", "longitude", "x", "y"]
+    other_cols = [c for c in df.columns if c not in preferred_tail]
+    df = df[other_cols + preferred_tail]
+
     csv_filename = 'full_tree_cases_import.csv'
     if 'id' in df.columns:
         df['id'] = df['id'].astype('Int64')
@@ -128,6 +155,8 @@ def generate_full_csv_with_json_spread():
         
     df.to_csv(csv_filename, index=False)
     print(f"\n✅ All done! The spread-out table has been saved to '{csv_filename}'.")
+    print("   Included geo columns: latitude, longitude (WGS84), x, y (HK 1980 Grid from map.gov.hk).")
+    print("   Before uploading to Supabase, add numeric columns `x` and `y` on table tree_cases if missing.")
 
 if __name__ == "__main__":
     generate_full_csv_with_json_spread()
